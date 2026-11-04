@@ -1,0 +1,5 @@
+# LA-F103 / LA-F429 logic analyzers (pid.codes test PID 1209:0001): user access,
+# keep ModemManager away, and a stable name per board (told apart by product string).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", ATTRS{product}=="LA-F103*", SYMLINK+="la-f103"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", ATTRS{product}=="LA-F429*", SYMLINK+="la-f429"

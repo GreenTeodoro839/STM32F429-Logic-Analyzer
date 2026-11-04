@@ -1,2 +1,0 @@
-# LA-F103 logic analyzer (pid.codes test PID): user access, keep ModemManager away, stable name
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="0001", MODE="0660", TAG+="uaccess", ENV{ID_MM_DEVICE_IGNORE}="1", SYMLINK+="la-f103"

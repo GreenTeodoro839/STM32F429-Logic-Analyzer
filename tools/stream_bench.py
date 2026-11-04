@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Streaming throughput test for LA-F103 (sigrok-pico protocol, no sigrok needed).
+"""Streaming throughput test for LA-F103 / LA-F429 (sigrok-pico protocol, no sigrok needed).
 
 Starts a fixed-length stream and reports how many bytes arrived, the achieved
 USB throughput and whether the device signalled an overflow ('!').
 
+    tools/stream_bench.py /dev/la-f429 --rate 20000000 --samples 20000000 --channels 8
     tools/stream_bench.py /dev/la-f103 --rate 2000000 --samples 4000000 --channels 4
 
 Channels are always the first N (CH0..CH(N-1)), as the sigrok driver requires.
@@ -34,7 +35,7 @@ def read(fd, timeout):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("device")
-    ap.add_argument("--rate", type=int, default=1000000, help="sample rate in Hz (<= 4 MHz, divides 72 MHz)")
+    ap.add_argument("--rate", type=int, default=1000000, help="sample rate in Hz (F429: <= 20 MHz, divides 120 MHz; F103: <= 4 MHz, divides 72 MHz)")
     ap.add_argument("--samples", type=int, default=2000000)
     ap.add_argument("--channels", type=int, default=8, choices=range(1, 9))
     args = ap.parse_args()

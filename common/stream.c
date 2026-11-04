@@ -3,7 +3,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "board.h"
 #include "capture.h"
 #include "clock.h"
 #include "la_status.h"
@@ -65,7 +64,7 @@ static void exec_line(void) {
         s_rate = rate;
         reply("*");
       } else {
-        reply("LA-F103: rate must be <=4MHz");  // anything but '*' refuses the start
+        reply(LA_RATE_ERROR);  // anything but '*' refuses the start
       }
       break;
     }
@@ -176,8 +175,6 @@ static void flush_rle(void) {
 
 typedef uint32_t __attribute__((may_alias)) u32_alias;
 
-typedef uint32_t __attribute__((may_alias, aligned(1))) u32_unaligned;  // M3 allows unaligned LDR
-
 // Encode the samples in [p, end) (contiguous in the ring buffer). Kept out of
 // line so the hot loop gets the registers to itself.
 static void __attribute__((noinline)) encode(const uint8_t *p, const uint8_t *end, uint8_t mask) {
@@ -186,14 +183,23 @@ static void __attribute__((noinline)) encode(const uint8_t *p, const uint8_t *en
   int prev = e.prev;
   uint32_t prev4 = prev < 0 ? 0xFFFFFFFFu : (uint32_t)prev * 0x01010101u;
   uint32_t rle = e.rle;
+  // Last word boundary in [p, end): the fast path reads aligned words only
+  // (an unaligned load is split into several bus accesses, which is slow on
+  // SDRAM).
+  const u32_alias *const wend = (const u32_alias *)((uintptr_t)end & ~(uintptr_t)3u);
 
   while (p < end) {
     uint8_t v = *p++ & mask;
-    if ((int)v == prev) {  // unchanged: count it, then 4 samples at a time
+    if ((int)v == prev) {  // unchanged: count it, then skip whole words
       rle++;
-      while (p + 4 <= end && (*(const u32_unaligned *)p & m4) == prev4) {
-        p += 4;
-        rle += 4u;
+      if (!((uintptr_t)p & 3u)) {
+        // Two words per step. (Longer runs of loads were measured to starve
+        // the sampling DMA when both use the SDRAM.)
+        const u32_alias *q = (const u32_alias *)p;
+        while (q + 2 <= wend && (q[0] & m4) == prev4 && (q[1] & m4) == prev4) q += 2;
+        if (q < wend && (q[0] & m4) == prev4) q++;
+        rle += (uint32_t)((const uint8_t *)q - p);
+        p = (const uint8_t *)q;
       }
       continue;
     }
@@ -267,29 +273,43 @@ void stream_run(void) {
   s_io->on_state();
 
   capture_stream_begin(&t);
-  const uint8_t *buf = capture_buffer();
   uint64_t rd = 0;
   bool stop = false, abort = false, overflow = false;
+  bool sampling = true;  // the DMA is still filling the ring
   uint32_t last_flush = millis();
 
   while (!stop) {
-    uint64_t w = capture_written();
-    if (w - rd > CAPTURE_BUF_SIZE - 64u) {  // the DMA lapped us: data lost
-      overflow = true;
-      break;
-    }
-    if (fixed && w > s_limit) w = s_limit;
+    uint64_t w = sampling ? capture_stream_readable() : s_limit;
 
     // Encode in pieces of the ring buffer. After each piece make sure the DMA
     // has not overwritten anything we were still about to read (encoding can
-    // block on USB).
-    while (rd < w) {
-      uint32_t idx = (uint32_t)(rd % CAPTURE_BUF_SIZE);
-      uint32_t n = (uint32_t)(w - rd);
-      if (n > CAPTURE_BUF_SIZE - idx) n = CAPTURE_BUF_SIZE - idx;
+    // block on USB for a long time), and stop sampling as soon as a
+    // fixed-length stream is complete.
+    for (;;) {
+      if (sampling) {
+        uint64_t now = capture_written();
+        if (now - rd > CAPTURE_RING_SIZE() - CAPTURE_GUARD - 64u) {  // the DMA lapped us: data lost
+          overflow = true;
+          break;
+        }
+        if (fixed && now >= s_limit) {
+          // Everything the host asked for is in the ring: stop sampling, so
+          // the DMA cannot overwrite what is still to be sent. With a large
+          // ring a fixed-length stream can be captured faster than USB
+          // carries it.
+          capture_stream_end();
+          sampling = false;
+        }
+      }
+      if (fixed && w > s_limit) w = s_limit;
+      if (rd >= w) break;
+      uint32_t n;
+      const uint8_t *p = capture_span(rd, &n);
+      if (n > w - rd) n = (uint32_t)(w - rd);
       if (n > STREAM_PIECE) n = STREAM_PIECE;
-      encode(&buf[idx], &buf[idx + n], mask);
-      if (capture_written() - rd > CAPTURE_BUF_SIZE) {
+      encode(p, p + n, mask);
+      // Was the piece overwritten while we were encoding it?
+      if (sampling && capture_written() - rd > CAPTURE_RING_SIZE() - CAPTURE_GUARD) {
         overflow = true;
         break;
       }
@@ -318,7 +338,7 @@ void stream_run(void) {
       }
     }
   }
-  capture_stream_end();
+  if (sampling) capture_stream_end();
 
   if (overflow) {
     out_flush();

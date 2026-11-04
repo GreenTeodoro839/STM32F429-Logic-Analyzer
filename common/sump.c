@@ -22,9 +22,6 @@
 #define FLAG_GROUPS_SHIFT  2  // bits 2..5: 1 = channel group disabled
 #define TRIG_CFG_START     (1u << 27)
 
-#define FW_NAME    "LA-F103"
-#define FW_VERSION "0.1"
-
 static const sump_io_t *s_io;
 
 static struct {
@@ -62,13 +59,13 @@ static void send_metadata(void) {
   uint8_t m[48];
   uint32_t n = 0;
   m[n++] = 0x01;  // device name
-  memcpy(&m[n], FW_NAME, sizeof FW_NAME);
-  n += sizeof FW_NAME;
+  memcpy(&m[n], LA_FW_NAME, sizeof LA_FW_NAME);
+  n += sizeof LA_FW_NAME;
   m[n++] = 0x02;  // firmware version
-  memcpy(&m[n], FW_VERSION, sizeof FW_VERSION);
-  n += sizeof FW_VERSION;
+  memcpy(&m[n], LA_FW_VERSION, sizeof LA_FW_VERSION);
+  n += sizeof LA_FW_VERSION;
   m[n++] = 0x20;  // number of probes
-  put_be32(&m[n], 8);
+  put_be32(&m[n], LA_NUM_CH);
   n += 4;
   m[n++] = 0x21;  // sample memory (bytes)
   put_be32(&m[n], CAPTURE_MAX_SAMPLES);

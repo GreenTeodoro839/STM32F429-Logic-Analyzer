@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "la_config.h"
 #include "stm32f1xx.h"
 
 // ---------------------------------------------------------------------------
@@ -31,7 +32,6 @@ static inline bool gpio_read(GPIO_TypeDef *port, unsigned pin) { return (port->I
 // NOTE: PA0..PA7 are NOT 5 V tolerant.
 // ---------------------------------------------------------------------------
 #define LA_PORT           GPIOA
-#define LA_NUM_CH         8
 #define LA_INPUT_PULLDOWN 1  // weak (~40k) pull-down so open inputs read 0
 
 // On-board LED (PC13, active low on most minimal boards)

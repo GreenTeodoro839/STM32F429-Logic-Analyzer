@@ -9,7 +9,12 @@ static uint8_t s_buf[CAPTURE_BUF_SIZE] __attribute__((section(".noinit"), aligne
 static volatile uint32_t s_turns;  // completed passes over the circular buffer
 
 uint8_t capture_sample(uint32_t index) { return s_buf[index % CAPTURE_BUF_SIZE]; }
-const uint8_t *capture_buffer(void) { return s_buf; }
+
+const uint8_t *capture_span(uint64_t index, uint32_t *contiguous) {
+  uint32_t idx = (uint32_t)(index % CAPTURE_BUF_SIZE);
+  *contiguous = CAPTURE_BUF_SIZE - idx;
+  return &s_buf[idx];
+}
 
 // ---------------------------------------------------------------------------
 // Timing
@@ -124,6 +129,7 @@ uint64_t capture_written(void) {
 }
 
 void capture_stream_begin(const capture_timing_t *t) { hw_start(t, CAPTURE_BUF_SIZE, true); }
+uint64_t capture_stream_readable(void) { return capture_written(); }
 void capture_stream_end(void) { hw_stop(); }
 
 // ---------------------------------------------------------------------------

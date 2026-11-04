@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "board.h"
+#include "la_config.h"
 #include "tusb.h"
 
 // pid.codes test VID/PID (for private / development use only)
@@ -45,8 +46,8 @@ const uint8_t *tud_descriptor_configuration_cb(uint8_t index) {
 
 static const char *const string_desc[] = {
     NULL,                      // 0: language (handled below)
-    "LA-F103",                 // 1: manufacturer
-    "LA-F103 Logic Analyzer",  // 2: product
+    LA_FW_NAME,                      // 1: manufacturer
+    LA_FW_NAME " Logic Analyzer",    // 2: product
     NULL,                      // 3: serial number (chip UID)
     "SUMP",                    // 4: CDC interface
 };
