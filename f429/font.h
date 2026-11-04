@@ -19,3 +19,4 @@ extern const font_t font_l;  // 12x24, bold
 #define G_TIMES  "\x83"
 #define G_DOT    "\x84"
 #define G_UPDOWN "\x85"
+#define G_DELTA  "\x86"

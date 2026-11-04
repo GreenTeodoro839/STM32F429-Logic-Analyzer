@@ -22,7 +22,7 @@ FONTS = [
 ]
 
 # Extra symbols, starting at code 0x80 (keep in sync with font.h)
-EXTRA = ["↑", "↓", "µ", "×", "●", "↕"]  # up down micro times dot updown
+EXTRA = ["↑", "↓", "µ", "×", "●", "↕", "Δ"]  # up down micro times dot updown delta
 
 FIRST = 0x20
 LAST = 0x80 + len(EXTRA) - 1

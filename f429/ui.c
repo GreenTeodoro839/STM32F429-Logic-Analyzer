@@ -1,141 +1,163 @@
 #include "ui.h"
 
-#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "capture_hw.h"
+#include "ch455.h"
 #include "clock.h"
-#include "gfx.h"
-#include "keys.h"
-#include "la_status.h"
+#include "gen.h"
 #include "lcd.h"
 #include "selftest.h"
 #include "tusb.h"
+#include "ui_priv.h"
 
 la_status_t g_la;
 
-// ---------------------------------------------------------------------------
-// Look
-// ---------------------------------------------------------------------------
-
-#define C_BG   RGB(10, 13, 18)
-#define C_BAR  RGB(30, 38, 50)
-#define C_TEXT RGB(230, 237, 243)
-#define C_DIM  RGB(120, 130, 142)
-#define C_GRID RGB(36, 44, 56)
-#define C_OK   RGB(70, 200, 90)
-#define C_WARN RGB(245, 185, 50)
-#define C_BUSY RGB(90, 170, 255)
-#define C_ERR  RGB(250, 85, 75)
-#define C_TRIG RGB(120, 96, 40)
-
 // Channel colours: resistor colour code as in PulseView (black -> grey)
-static const uint16_t s_ch_color[LA_NUM_CH] = {
+const uint16_t ui_ch_color[LA_NUM_CH] = {
     RGB(175, 175, 175), RGB(200, 130, 80), RGB(240, 75, 75),  RGB(245, 150, 45),
     RGB(240, 220, 50),  RGB(85, 210, 105), RGB(85, 155, 245), RGB(185, 125, 245),
 };
 
-// Main page geometry
-#define TITLE_H 24
-#define STATE_Y 26
-#define INFO1_Y 52
-#define INFO2_Y 68
-#define STATUS_H 86  // rows 0..85 belong to the status block
-#define ROWS_Y  90
-#define ROW_H   16
-#define LEVEL_X 12
-#define WAVE_X  28
-#define WAVE_W  (GFX_W - WAVE_X - 2)
-#define FOOT_Y  (ROWS_Y + LA_NUM_CH * ROW_H + 6)
+#define FRAME_MS 100u  // live levels / USB badge
+#define SEG7_MS  250u
 
-#define FRAME_MS   100u
-#define JOB_CYCLES (HCLK_HZ / 1000u * 3u)  // preview work per ui_poll call: 3 ms
+static const ui_page_t *const s_pages[PAGE_COUNT] = {
+    &ui_page_wave, &ui_page_setup, &ui_page_meter, &ui_page_decode,
+    &ui_page_gen,  &ui_page_pins,  &ui_page_info,  &ui_page_menu,
+};
 
-typedef enum { PAGE_MAIN, PAGE_PINS, PAGE_INFO, PAGE_COUNT } page_t;
-
-static page_t s_page;
-static uint8_t s_seen_hi, s_seen_lo;  // live levels accumulated since the last frame
-static uint8_t s_lv_hi, s_lv_lo;      // what the level boxes show
-static bool s_levels_drawn;
-static uint32_t s_frame_ms;
-
-// Waveform preview of the last capture: OR / AND of every column's samples
-static struct {
-  capture_window_t win;
-  uint32_t zoom;         // 1, 4, 16, ...
-  uint32_t from, count;  // window-relative sample range shown
-  unsigned col;          // next column to compute
-  bool active, ready;
-  uint8_t col_or[WAVE_W], col_and[WAVE_W];
-} s_view;
+static page_id_t s_page = PAGE_WAVE, s_back = PAGE_WAVE;
+static uint8_t s_seen_hi, s_seen_lo;
+static uint32_t s_frame_ms, s_seg7_ms;
+static char s_seg7[9];
+static bool s_capture_request;
 
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
 
-// v / scale with 3 significant digits, trailing zeros dropped: 1.23, 12.5, 100
-static void fmt3(char *out, size_t n, uint64_t v, uint64_t scale, const char *suffix) {
+void ui_fmt_digits(char *out, size_t n, uint64_t v, uint64_t scale, unsigned digits, bool trim, const char *suffix) {
   uint64_t ip = v / scale;
-  unsigned dec = scale == 1u ? 0 : ip >= 100u ? 0 : ip >= 10u ? 1 : 2;
-  uint64_t p = dec == 2 ? 100u : dec == 1 ? 10u : 1u;
+  unsigned int_digits = 1;
+  for (uint64_t x = ip; x >= 10u; x /= 10u) int_digits++;
+  unsigned dec = digits > int_digits ? digits - int_digits : 0;
+  uint64_t p = 1;
+  for (unsigned i = 0; i < dec; i++) p *= 10u;
+  if (scale == 1u) dec = 0, p = 1;
   uint64_t q = (v * p + scale / 2u) / scale;
-  unsigned long whole = (unsigned long)(q / p), frac = (unsigned long)(q % p);
-  if (!frac) snprintf(out, n, "%lu%s", whole, suffix);
-  else if (dec == 2 && frac % 10u) snprintf(out, n, "%lu.%02lu%s", whole, frac, suffix);
-  else snprintf(out, n, "%lu.%lu%s", whole, dec == 2 ? frac / 10u : frac, suffix);
+  unsigned long whole = (unsigned long)(q / p);
+  unsigned long frac = (unsigned long)(q % p);
+  if (trim)
+    while (dec && frac % 10u == 0) {
+      frac /= 10u;
+      dec--;
+    }
+  if (!dec) snprintf(out, n, "%lu%s", whole, suffix);
+  else snprintf(out, n, "%lu.%0*lu%s", whole, (int)dec, frac, suffix);
 }
 
-// 1.23k, 12.5MHz, 33.5M ...
-static void fmt_si(char *out, size_t n, uint64_t v, const char *unit) {
-  static const char *const pre[] = {"", "k", "M", "G"};
+static void fmt_scaled(char *out, size_t n, uint64_t v, const char *const *units, unsigned nunits, unsigned digits,
+                       bool trim) {
   unsigned e = 0;
   uint64_t scale = 1;
-  while (e < 3 && v >= scale * 1000u) {
+  while (e + 1u < nunits && v >= scale * 1000u) {
     scale *= 1000u;
     e++;
   }
-  char suffix[8];
-  snprintf(suffix, sizeof suffix, "%s%s", pre[e], unit);
-  fmt3(out, n, v, scale, suffix);
+  ui_fmt_digits(out, n, v, scale, digits, trim, units[e]);
 }
 
-// Duration of `samples` at rate_hz: 850ns, 1.6ms, 2.5s ...
-static void fmt_time(char *out, size_t n, uint64_t samples, uint32_t rate_hz) {
-  static const char *const unit[] = {"ns", G_MICRO "s", "ms", "s"};
+void ui_fmt_si(char *out, size_t n, uint64_t v, const char *unit) {
+  char u[4][16];
+  static const char *const pre[] = {"", "k", "M", "G"};
+  const char *units[4];
+  for (unsigned i = 0; i < 4; i++) {
+    snprintf(u[i], sizeof u[i], "%s%s", pre[i], unit);
+    units[i] = u[i];
+  }
+  fmt_scaled(out, n, v, units, 4, 3, true);
+}
+
+void ui_fmt_hz_milli(char *out, size_t n, uint64_t mhz, unsigned digits) {
+  static const char *const units[] = {"mHz", "Hz", "kHz", "MHz"};
+  fmt_scaled(out, n, mhz, units, 4, digits, false);
+}
+
+void ui_fmt_time(char *out, size_t n, uint64_t samples, uint32_t rate_hz) {
+  static const char *const units[] = {"ns", G_MICRO "s", "ms", "s"};
   if (!rate_hz) {
     snprintf(out, n, "-");
     return;
   }
-  uint64_t ns = samples * 1000000000ull / rate_hz;
-  unsigned e = 0;
-  uint64_t scale = 1;
-  while (e < 3 && ns >= scale * 1000u) {
-    scale *= 1000u;
-    e++;
+  fmt_scaled(out, n, samples * 1000000000ull / rate_hz, units, 4, 3, true);
+}
+
+void ui_fmt_stime(char *out, size_t n, int64_t samples, uint32_t rate_hz) {
+  if (!samples) {
+    snprintf(out, n, "0");
+    return;
   }
-  fmt3(out, n, ns, scale, unit[e]);
+  out[0] = samples < 0 ? '-' : '+';
+  ui_fmt_time(out + 1, n - 1, (uint64_t)(samples < 0 ? -samples : samples), rate_hz);
+}
+
+void ui_seg7_khz(char *out, uint64_t mhz) {
+  // kHz with 4 significant digits: 0.001 .. 9999.
+  uint64_t hz1000 = mhz;  // millihertz = 1e-6 kHz units
+  if (hz1000 >= 10000000000ull) {
+    strcpy(out, "----");  // >= 10 MHz does not fit
+    return;
+  }
+  // value in units of 1e-6 kHz; choose decimals so that 4 digits show
+  uint64_t div = 1000000;  // 1 kHz
+  unsigned dec = 0;
+  uint64_t ip = hz1000 / div;
+  if (ip < 10) dec = 3;
+  else if (ip < 100) dec = 2;
+  else if (ip < 1000) dec = 1;
+  uint64_t p = dec == 3 ? 1000 : dec == 2 ? 100 : dec == 1 ? 10 : 1;
+  uint64_t q = (hz1000 * p + div / 2) / div;
+  if (dec) snprintf(out, 9, "%lu.%0*lu", (unsigned long)(q / p), (int)dec, (unsigned long)(q % p));
+  else snprintf(out, 9, "%lu.", (unsigned long)q);
 }
 
 // ---------------------------------------------------------------------------
-// Status block
+// Drawing helpers
 // ---------------------------------------------------------------------------
 
-static void draw_title(const char *title, const char *right) {
+void ui_title(const char *title, const char *right) {
   gfx_fill(0, 0, GFX_W, TITLE_H, C_BAR);
   gfx_text(6, 0, &font_l, title, C_TEXT, C_BAR);
   if (right) gfx_text(GFX_W - 6 - gfx_text_width(&font_s, right), 4, &font_s, right, C_DIM, C_BAR);
 }
 
-static void draw_usb_badge(void) {
+void ui_hint(const char *text) { gfx_text_box(2, HINT_Y, GFX_W - 4, &font_s, text, C_DIM, C_BG); }
+
+void ui_row(int y, const char *text, uint16_t color, bool selected) {
+  uint16_t bg = selected ? C_SEL : C_BG;
+  gfx_fill(0, y - 1, GFX_W, LINE_H, bg);
+  gfx_text_box(4, y, GFX_W - 8, &font_s, text, color, bg);
+}
+
+void ui_draw_usb_badge(void) {
   bool up = tud_mounted();
   const char *s = up ? "USB" : "NO USB";
   int w = gfx_text_width(&font_s, s) + 10;
   int x = GFX_W - 4 - w;
   uint16_t bg = up ? RGB(25, 90, 45) : RGB(110, 30, 30);
+  gfx_fill(x - 60, 3, 60, 18, C_BAR);
   gfx_fill(x, 3, w, 18, bg);
   gfx_text(x + 5, 4, &font_s, s, C_TEXT, bg);
 }
+
+// ---------------------------------------------------------------------------
+// Status block (waveform page)
+// ---------------------------------------------------------------------------
+
+#define STATE_Y 26
+#define INFO1_Y 52
+#define INFO2_Y 68
 
 static void state_text(char *s, size_t n, uint16_t *color) {
   *color = C_TEXT;
@@ -158,22 +180,22 @@ static void state_text(char *s, size_t n, uint16_t *color) {
 static void info1_text(char *s, size_t n) {
   char hz[16], cnt[16];
   if (!g_la.rate_hz) {
-    fmt_si(hz, sizeof hz, CAPTURE_MAX_RATE_HZ, "Hz");
-    fmt_si(cnt, sizeof cnt, capture_max_samples(), "");
+    ui_fmt_si(hz, sizeof hz, CAPTURE_MAX_RATE_HZ, "Hz");
+    ui_fmt_si(cnt, sizeof cnt, capture_max_samples(), "");
     snprintf(s, n, "Max %s, %s samples", hz, cnt);
     return;
   }
-  fmt_si(hz, sizeof hz, g_la.rate_hz, "Hz");
+  ui_fmt_si(hz, sizeof hz, g_la.rate_hz, "Hz");
   if (g_la.streaming) {
     if (g_la.state == LA_STREAMING) {
       snprintf(s, n, "%s stream, %uch", hz, (unsigned)g_la.stream_channels);
     } else {
-      fmt_si(cnt, sizeof cnt, g_la.stream_samples, "");
+      ui_fmt_si(cnt, sizeof cnt, g_la.stream_samples, "");
       snprintf(s, n, "%s %uch, %s smp", hz, (unsigned)g_la.stream_channels, cnt);
     }
     return;
   }
-  fmt_si(cnt, sizeof cnt, g_la.samples, "");
+  ui_fmt_si(cnt, sizeof cnt, g_la.samples, "");
   if (g_la.num_stages && g_la.samples)
     snprintf(s, n, "%s%s  %s smp  pre %lu%%", g_la.rate_exact ? "" : "~", hz, cnt,
              (unsigned long)((uint64_t)g_la.pre * 100u / g_la.samples));
@@ -204,7 +226,7 @@ static void info2_text(char *s, size_t n, uint16_t *color) {
   } else if (g_la.streaming) {
     snprintf(s, n, "Trigger: in PulseView");
   } else if (!g_la.rate_hz) {
-    snprintf(s, n, "PulseView: OLS / RPi Pico");
+    snprintf(s, n, "PulseView, or B = run here");
   } else if (!g_la.num_stages) {
     snprintf(s, n, "Trigger: none");
   } else {
@@ -218,11 +240,11 @@ static void info2_text(char *s, size_t n, uint16_t *color) {
   }
 }
 
-static void draw_status(void) {
+void ui_draw_status(void) {
   char line[64];
   uint16_t color;
-  draw_title(LA_FW_NAME, NULL);
-  draw_usb_badge();
+  ui_title(LA_FW_NAME, NULL);
+  ui_draw_usb_badge();
   gfx_fill(0, TITLE_H, GFX_W, STATUS_H - TITLE_H, C_BG);
   state_text(line, sizeof line, &color);
   gfx_text_box(6, STATE_Y, GFX_W - 12, &font_l, line, color, C_BG);
@@ -233,168 +255,78 @@ static void draw_status(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Channel rows: live level + waveform
+// Menu, pins and info pages
 // ---------------------------------------------------------------------------
 
-static uint16_t dim(uint16_t c, unsigned a16) {  // c scaled towards C_BG by a16/16
-  int r = (c >> 11) * (int)a16 / 16, g = ((c >> 5) & 63) * (int)a16 / 16, b = (c & 31) * (int)a16 / 16;
-  return (uint16_t)((r << 11) | (g << 5) | b);
+static const char *const s_menu_items[] = {"Waveform", "Capture setup", "Meter", "Decode", "Generator", "Pins", "Info"};
+
+static void menu_draw(void) {
+  char line[40];
+  gfx_fill(0, 0, GFX_W, GFX_H, C_BG);
+  ui_title("Menu", NULL);
+  for (unsigned i = 0; i < sizeof s_menu_items / sizeof s_menu_items[0]; i++) {
+    snprintf(line, sizeof line, "%u  %s", i + 1u, s_menu_items[i]);
+    ui_row(32 + (int)i * 24, line, i == (unsigned)s_back ? C_BUSY : C_TEXT, false);
+  }
+  ui_hint("1-7 open   * back");
 }
 
-static void draw_level(unsigned ch) {
-  int y = ROWS_Y + (int)ch * ROW_H + 3;
-  bool hi = (s_lv_hi >> ch) & 1u, lo = (s_lv_lo >> ch) & 1u;
-  uint16_t c = s_ch_color[ch];
-  gfx_fill(LEVEL_X, y, 12, 10, C_BG);
-  if (hi && lo) {  // toggling: striped
-    for (int i = 0; i < 12; i += 3) gfx_fill(LEVEL_X + i, y, 2, 10, c);
-  } else if (hi) {
-    gfx_fill(LEVEL_X, y, 12, 10, c);
-  } else {
-    gfx_rect(LEVEL_X, y, 12, 10, dim(c, 9));
+static bool menu_key(uint8_t k) {
+  if (k >= '1' && k <= '7') {
+    ui_goto((page_id_t)(k - '1'));
+    return true;
   }
+  if (k == '*' || k == 'A') {
+    ui_goto(s_back);
+    return true;
+  }
+  return false;
 }
 
-static void draw_row_labels(void) {
-  for (unsigned ch = 0; ch < LA_NUM_CH; ch++) {
-    char d[2] = {(char)('0' + ch), 0};
-    gfx_text(1, ROWS_Y + (int)ch * ROW_H, &font_s, d, s_ch_color[ch], C_BG);
-    draw_level(ch);
-  }
-}
+const ui_page_t ui_page_menu = {"Menu", 0, 0, menu_draw, menu_key, 0, 0};
 
-static void draw_footer(void) {
-  char line[48], span[16];
-  gfx_fill(0, FOOT_Y, GFX_W, GFX_H - FOOT_Y, C_BG);
-  if (s_view.ready) {
-    // view span and zoom on the left, key hint on the right
-    fmt_time(span, sizeof span, s_view.count, s_view.win.rate_hz);
-    snprintf(line, sizeof line, "%s " G_TIMES "%lu", span, (unsigned long)s_view.zoom);
-    gfx_text(2, FOOT_Y, &font_s, line, C_TEXT, C_BG);
-  }
-  const char *keys = s_view.ready ? "K2 zoom" : "K1 page  K2 zoom";
-  gfx_text(GFX_W - 2 - gfx_text_width(&font_s, keys), FOOT_Y, &font_s, keys, C_DIM, C_BG);
-}
-
-static void draw_waves(void) {
-  gfx_fill(WAVE_X, ROWS_Y - 2, WAVE_W, LA_NUM_CH * ROW_H + 2, C_BG);
-  if (!s_view.ready) {
-    const char *msg = s_view.active ? "Preparing preview..." : "No capture yet";
-    int x = WAVE_X + (WAVE_W - gfx_text_width(&font_s, msg)) / 2;
-    gfx_text(x, ROWS_Y + 3 * ROW_H + ROW_H / 2, &font_s, msg, C_DIM, C_BG);
-    return;
-  }
-  // Trigger position
-  int tcol = -1;
-  if (s_view.win.trigger >= 0) {
-    int64_t rel = (int64_t)s_view.win.trigger - s_view.from;
-    if (rel >= 0 && rel < (int64_t)s_view.count) tcol = (int)(rel * WAVE_W / s_view.count);
-  }
-  if (tcol >= 0) {
-    for (int y = ROWS_Y - 2; y < ROWS_Y + LA_NUM_CH * ROW_H; y += 2) gfx_fill(WAVE_X + tcol, y, 1, 1, C_TRIG);
-    gfx_fill(WAVE_X + tcol - 2, ROWS_Y - 4, 5, 2, C_WARN);
-  }
-  for (unsigned ch = 0; ch < LA_NUM_CH; ch++) {
-    int top = ROWS_Y + (int)ch * ROW_H;
-    int yh = top + 3, yl = top + 12;
-    uint16_t c = s_ch_color[ch], fill = dim(c, 4);
-    int prev = -1;  // 0 low, 1 high, 2 toggling
-    for (int col = 0; col < WAVE_W; col++) {
-      int x = WAVE_X + col;
-      bool o = (s_view.col_or[col] >> ch) & 1u, a = (s_view.col_and[col] >> ch) & 1u;
-      int st = a ? 1 : !o ? 0 : 2;
-      if (st == 1) {
-        gfx_vline(x, yh + 1, yl - yh, fill);
-        g_fb[yh][x] = c;
-      } else if (st == 0) {
-        g_fb[yl][x] = c;
-      }
-      if (st == 2 || (prev >= 0 && prev != 2 && st != prev)) gfx_vline(x, yh, yl - yh + 1, c);
-      prev = st;
-    }
-  }
-}
-
-// Start computing the preview for the current zoom level.
-static void view_start(void) {
-  capture_window_t w = s_view.win;
-  uint32_t count = w.total / s_view.zoom;
-  if (count < WAVE_W) count = WAVE_W;
-  if (count > w.total) count = w.total;
-  uint32_t centre = w.trigger >= 0 ? (uint32_t)w.trigger : w.total / 2u;
-  uint32_t from = centre > count / 2u ? centre - count / 2u : 0;
-  if (from + count > w.total) from = w.total - count;
-  s_view.from = from;
-  s_view.count = count;
-  s_view.col = 0;
-  s_view.active = w.total >= 2u;
-  s_view.ready = false;
-}
-
-static void view_work(void) {
-  if (!s_view.active) return;
-  uint32_t t0 = cycles();
-  capture_window_t *w = &s_view.win;
-  while (s_view.col < WAVE_W && (uint32_t)(cycles() - t0) < JOB_CYCLES) {
-    unsigned c = s_view.col;
-    // Columns cover [c * count / W, (c + 1) * count / W); with fewer samples
-    // than columns, each sample is repeated.
-    uint64_t a = (uint64_t)c * s_view.count / WAVE_W, b = (uint64_t)(c + 1u) * s_view.count / WAVE_W;
-    if (b <= a) b = a + 1u;
-    capture_or_and(w->start + s_view.from + (uint32_t)a, (uint32_t)(b - a), &s_view.col_or[c], &s_view.col_and[c]);
-    s_view.col++;
-  }
-  if (s_view.col >= WAVE_W) {
-    s_view.active = false;
-    s_view.ready = true;
-    if (s_page == PAGE_MAIN) {
-      draw_waves();
-      draw_footer();
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Other pages
-// ---------------------------------------------------------------------------
-
-static void draw_pins(void) {
+static void pins_draw(void) {
   static const char *const pin[LA_NUM_CH] = {"PI0 JD2-15", "PI1 JD2-9",  "PI2 JD2-11", "PI3 JD2-13",
                                              "PI4 JD1-13", "PI5 JD1-3",  "PI6 JD1-14", "PI7 JD1-15"};
+  char line[40], f[16];
   gfx_fill(0, 0, GFX_W, GFX_H, C_BG);
-  draw_title("Pins", "2/3");
+  ui_title("Pins", NULL);
   for (unsigned ch = 0; ch < LA_NUM_CH; ch++) {
     int x = ch < 4 ? 4 : 122, y = 30 + (int)(ch % 4u) * 18;
     char d[2] = {(char)('0' + ch), 0};
-    gfx_text(x, y, &font_s, d, s_ch_color[ch], C_BG);
+    gfx_text(x, y, &font_s, d, ui_ch_color[ch], C_BG);
     gfx_text(x + 12, y, &font_s, pin[ch], C_TEXT, C_BG);
   }
   gfx_text(4, 104, &font_s, "GND JD1-2, JD2-3/23/24", C_TEXT, C_BG);
   gfx_text(4, 122, &font_s, "Inputs: 3.3 V logic only", C_WARN, C_BG);
   gfx_hline(4, 144, GFX_W - 8, C_GRID);
-  gfx_text(4, 150, &font_s, "Test signals", C_DIM, C_BG);
-  gfx_text(4, 168, &font_s, "PB0 JD2-10  100 kHz", C_TEXT, C_BG);
-  gfx_text(4, 186, &font_s, "PB1 JD2-12  1 MHz", C_TEXT, C_BG);
-  gfx_text(4, 204, &font_s, "PA5 JD2-16  1 kHz", C_TEXT, C_BG);
-  gfx_text(4, 222, &font_s, "PA9 JD2-7   UART 115200", C_TEXT, C_BG);
+  gfx_text(4, 148, &font_s, "Generator outputs", C_DIM, C_BG);
+  for (unsigned i = 0; i < GEN_PWM_OUTPUTS; i++) {
+    ui_fmt_hz_milli(f, sizeof f, gen_actual_mhz(i), 4);
+    snprintf(line, sizeof line, "%s  %s", gen_pin_name[i], g_gen.pwm[i].on ? f : "off");
+    gfx_text(4, 166 + (int)i * 18, &font_s, line, C_TEXT, C_BG);
+  }
+  snprintf(line, sizeof line, "%s   UART %lu", gen_pin_name[3], (unsigned long)g_gen.uart.baud);
+  gfx_text(4, 220, &font_s, g_gen.uart.on ? line : "PA9 JD2-7   UART off", C_TEXT, C_BG);
 }
 
-static void draw_info(void) {
+const ui_page_t ui_page_pins = {"Pins", 0, 0, pins_draw, 0, 0, 0};
+
+static void info_draw(void) {
   char line[48], a[16], b[16];
   gfx_fill(0, 0, GFX_W, GFX_H, C_BG);
-  draw_title("Info", "3/3");
-  int y = 30;
-  snprintf(line, sizeof line, "%s v%s", LA_FW_NAME, LA_FW_VERSION);
+  ui_title("Info", NULL);
+  int y = 28;
+  snprintf(line, sizeof line, "%s v%s, CPU 120 MHz", LA_FW_NAME, LA_FW_VERSION);
   gfx_text(4, y, &font_s, line, C_TEXT, C_BG);
   y += 18;
-  gfx_text(4, y, &font_s, "CPU 120 MHz, HSE", C_TEXT, C_BG);
-  gfx_text(4 + 17 * 8, y, &font_s, g_clock_hse_ok ? "ok" : "FAIL", g_clock_hse_ok ? C_OK : C_ERR, C_BG);
+  gfx_text(4, y, &font_s, "HSE", C_TEXT, C_BG);
+  gfx_text(4 + 4 * 8, y, &font_s, g_clock_hse_ok ? "ok" : "FAIL", g_clock_hse_ok ? C_OK : C_ERR, C_BG);
+  gfx_text(4 + 8 * 8, y, &font_s, "SDRAM 32MB", C_TEXT, C_BG);
+  gfx_text(4 + 19 * 8, y, &font_s, capture_sdram_ok() ? "ok" : "FAIL", capture_sdram_ok() ? C_OK : C_ERR, C_BG);
   y += 18;
-  gfx_text(4, y, &font_s, "SDRAM 32 MB", C_TEXT, C_BG);
-  gfx_text(4 + 12 * 8, y, &font_s, capture_sdram_ok() ? "ok" : "FAIL", capture_sdram_ok() ? C_OK : C_ERR, C_BG);
-  y += 18;
-  fmt_si(a, sizeof a, CAPTURE_MAX_RATE_HZ, "Hz");
-  fmt_si(b, sizeof b, capture_max_samples(), "");
+  ui_fmt_si(a, sizeof a, CAPTURE_MAX_RATE_HZ, "Hz");
+  ui_fmt_si(b, sizeof b, capture_max_samples(), "");
   snprintf(line, sizeof line, "Max %s, %s samples", a, b);
   gfx_text(4, y, &font_s, line, C_TEXT, C_BG);
   y += 24;
@@ -406,7 +338,7 @@ static void draw_info(void) {
     int x = gfx_text(4, y, &font_s, mem[m], C_TEXT, C_BG) + 8;
     for (unsigned r = 0; r < SELFTEST_RATES; r++) {
       int32_t l0 = g_selftest.lost[r][m][0], l1 = g_selftest.lost[r][m][1];
-      snprintf(line, sizeof line, "%lu", (unsigned long)(CAPTURE_TIMER_HZ / g_selftest.ticks[r] / 1000000u));
+      snprintf(line, sizeof line, "%lu", (unsigned long)(g_selftest.ticks[r] ? CAPTURE_TIMER_HZ / g_selftest.ticks[r] / 1000000u : 0));
       uint16_t c = (l0 < 0 || l1 < 0) ? C_DIM : (l0 == 0 && l1 == 0) ? C_OK : C_ERR;
       x = gfx_text(x, y, &font_s, line, c, C_BG) + 8;
     }
@@ -416,27 +348,62 @@ static void draw_info(void) {
   snprintf(line, sizeof line, "Captures %lu", (unsigned long)g_la.captures);
   gfx_text(4, y, &font_s, line, C_TEXT, C_BG);
   y += 18;
+  int code = input_last_code();
+  if (!input_keypad_ok()) snprintf(line, sizeof line, "Keypad (CH455): not found");
+  else if (code < 0) snprintf(line, sizeof line, "Keypad ok, press a key");
+  else snprintf(line, sizeof line, "Keypad ok, last code 0x%02X", (unsigned)code);
+  gfx_text(4, y, &font_s, line, input_keypad_ok() ? C_TEXT : C_ERR, C_BG);
+  y += 18;
   gfx_text(4, y, &font_s, "USB 1209:0001 CDC", C_TEXT, C_BG);
 }
 
-static void draw_page(void) {
-  if (s_page == PAGE_MAIN) {
-    gfx_fill(0, 0, GFX_W, GFX_H, C_BG);
-    draw_status();
-    draw_row_labels();
-    draw_waves();
-    draw_footer();
-    s_levels_drawn = true;
-  } else if (s_page == PAGE_PINS) {
-    draw_pins();
-  } else {
-    draw_info();
+// Key test: show the raw code of every key press
+static bool info_key(uint8_t k) {
+  (void)k;
+  return false;
+}
+
+static void info_poll(void) {
+  static int last = -2;
+  int code = input_last_code();
+  if (code != last) {
+    last = code;
+    info_draw();
   }
 }
 
+const ui_page_t ui_page_info = {"Info", 0, 0, info_draw, info_key, info_poll, 0};
+
 // ---------------------------------------------------------------------------
-// Entry points
+// Core
 // ---------------------------------------------------------------------------
+
+page_id_t ui_current(void) { return s_page; }
+
+void ui_goto(page_id_t p) {
+  if (p >= PAGE_COUNT) p = PAGE_WAVE;
+  if (p == PAGE_MENU && s_page != PAGE_MENU) s_back = s_page;
+  if (s_pages[s_page]->leave) s_pages[s_page]->leave();
+  s_page = p;
+  if (s_pages[p]->enter) s_pages[p]->enter();
+  s_pages[p]->draw();
+  s_seg7_ms = millis() - SEG7_MS;  // refresh the digits now
+}
+
+bool ui_capture_busy(void) {
+  la_state_t st = g_la.state;
+  return st == LA_WAIT_TRIGGER || st == LA_CAPTURING || st == LA_SENDING || st == LA_STREAMING;
+}
+
+void ui_request_capture(void) { s_capture_request = true; }
+
+bool ui_take_capture(capture_cfg_t *cfg) {
+  if (!s_capture_request) return false;
+  s_capture_request = false;
+  if (!setup_take_request(cfg)) return false;
+  if (s_page != PAGE_WAVE) ui_goto(PAGE_WAVE);  // show the state of the capture
+  return true;
+}
 
 static void flush(bool wait) {
   unsigned y0, y1;
@@ -448,13 +415,23 @@ static void flush(bool wait) {
   if (wait) lcd_wait();
 }
 
+static void seg7_update(void) {
+  char buf[9] = "----";
+  const ui_page_t *pg = s_pages[s_page];
+  if (pg->seg7) pg->seg7(buf);
+  if (strcmp(buf, s_seg7) != 0) {
+    strcpy(s_seg7, buf);
+    ch455_text(buf);
+  }
+}
+
 void ui_init(void) {
   memset(&g_la, 0, sizeof g_la);
-  memset(&s_view, 0, sizeof s_view);
-  s_page = PAGE_MAIN;
-  draw_page();
+  s_page = PAGE_WAVE;
+  s_pages[s_page]->draw();
   flush(true);
   lcd_display_on();
+  seg7_update();
 }
 
 void ui_levels(uint8_t v) {
@@ -464,60 +441,45 @@ void ui_levels(uint8_t v) {
 
 void ui_redraw_status(void) {
   la_state_t st = g_la.state;
-  if (st == LA_WAIT_TRIGGER || st == LA_CAPTURING || st == LA_STREAMING) s_view.active = false;  // ring reused
-  if (st == LA_DONE) {
-    capture_window_t w = capture_last_window();
-    if (w.valid) {
-      s_view.win = w;
-      s_view.zoom = 1;
-      view_start();
-    }
+  if (st == LA_WAIT_TRIGGER || st == LA_CAPTURING || st == LA_STREAMING) {
+    wave_capture_started();
+    ch455_text(" run");
+    strcpy(s_seg7, " run");
   }
-  if (s_page == PAGE_MAIN) {
-    draw_status();
-    if (st == LA_DONE) {
-      draw_waves();
-      draw_footer();
-    }
+  if (st == LA_DONE) wave_capture_done();
+  if (s_page == PAGE_WAVE) {
+    // Only the status block while a capture starts or uploads (keeps the
+    // delay before sampling short); everything once it is over.
+    if (st == LA_DONE || st == LA_ABORTED || st == LA_STREAM_DONE || st == LA_STREAM_OVERFLOW) ui_page_wave.draw();
+    else ui_draw_status();
   }
   flush(true);  // the LCD DMA must be idle before sampling starts
 }
 
 void ui_poll(void) {
-  uint8_t k = keys_poll();
-  if (k & KEY_1) {
-    s_page = (page_t)((s_page + 1) % PAGE_COUNT);
-    draw_page();
-  }
-  if ((k & KEY_2) && s_page == PAGE_MAIN && s_view.win.valid && !s_view.active) {
-    // Zoom in 4x around the trigger until one sample per pixel, then back out
-    s_view.zoom = s_view.win.total / s_view.zoom / 4u >= WAVE_W ? s_view.zoom * 4u : 1u;
-    view_start();
-    draw_waves();
-    draw_footer();
+  uint8_t k = input_poll();
+  if (k) {
+    const ui_page_t *pg = s_pages[s_page];
+    if (!(pg->key && pg->key(k))) {
+      if (k == 'A') ui_goto(s_page == PAGE_MENU ? s_back : PAGE_MENU);
+      else if (k == KEY_BTN1) ui_goto((page_id_t)((s_page + 1) % PAGE_MENU));
+      else if (k == 'B' || k == KEY_BTN2) ui_request_capture();
+      else if (k == '*' && s_page != PAGE_WAVE) ui_goto(PAGE_WAVE);
+    }
   }
 
-  view_work();
+  if (s_pages[s_page]->poll) s_pages[s_page]->poll();
 
   uint32_t now = millis();
   if ((uint32_t)(now - s_frame_ms) >= FRAME_MS) {
     s_frame_ms = now;
     uint8_t hi = s_seen_hi, lo = s_seen_lo;
     s_seen_hi = s_seen_lo = 0;
-    if (s_page == PAGE_MAIN) {
-      uint8_t changed = (uint8_t)((hi ^ s_lv_hi) | (lo ^ s_lv_lo));
-      s_lv_hi = hi;
-      s_lv_lo = lo;
-      for (unsigned ch = 0; ch < LA_NUM_CH; ch++)
-        if (((changed >> ch) & 1u) || !s_levels_drawn) draw_level(ch);
-      s_levels_drawn = true;
-      static bool usb_was;
-      bool usb = tud_mounted();
-      if (usb != usb_was) {
-        usb_was = usb;
-        draw_usb_badge();
-      }
-    }
+    if (s_page == PAGE_WAVE) wave_levels(hi, lo);
+  }
+  if ((uint32_t)(now - s_seg7_ms) >= SEG7_MS) {
+    s_seg7_ms = now;
+    seg7_update();
   }
   flush(false);
 }

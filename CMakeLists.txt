@@ -83,9 +83,20 @@ else()
     f429/gfx.c
     f429/font.c
     f429/ui.c
+    f429/ui_wave.c
+    f429/ui_setup.c
+    f429/ui_meter.c
+    f429/ui_decode.c
+    f429/ui_gen.c
     f429/keys.c
+    f429/input.c
+    f429/ch455.c
     f429/capture.c
-    f429/testsig.c
+    f429/analyze.c
+    f429/decode.c
+    f429/meter.c
+    f429/gen.c
+    f429/gen_calc.c
     f429/selftest.c
     ${TP}/cmsis_device_f4/Source/Templates/system_stm32f4xx.c
     ${TP}/cmsis_device_f4/Source/Templates/gcc/startup_stm32f429xx.s

@@ -5,20 +5,21 @@
 //    (SDRAM), device-side trigger. sigrok driver "ols".
 //  - sigrok-pico (ASCII): RLE streaming, length limited only by the host.
 //    sigrok driver "raspberrypi-pico" (PulseView nightly).
-// The on-board 240x240 LCD shows the state, live levels and a preview of
-// the last capture.
+// The on-board 240x240 LCD and the 4x4 keypad also make it a standalone
+// instrument: captures without a PC, waveform cursors, a live frequency meter,
+// UART/I2C/SPI decoding and a signal generator on the JD2 test pins.
 
 #include "board.h"
 #include "capture_hw.h"
 #include "clock.h"
-#include "keys.h"
+#include "gen.h"
+#include "input.h"
 #include "la_status.h"
 #include "lcd.h"
 #include "sdram.h"
 #include "selftest.h"
 #include "stream.h"
 #include "sump.h"
-#include "testsig.h"
 #include "tusb.h"
 #include "ui.h"
 
@@ -77,7 +78,7 @@ static void led(bool on) {
 // Runs about once per millisecond while a capture is in progress.
 static bool capture_poll(void) {
   tud_task();
-  testsig_poll();
+  gen_poll();
   led((millis() / 100u) & 1u);  // fast blink while capturing
   // Any byte from the host (PulseView sends a reset on "Stop") aborts.
   return !tud_mounted() || tud_cdc_available();
@@ -97,9 +98,54 @@ static int cdc_read_byte(void) {
 
 static bool stream_service(void) {
   tud_task();
-  testsig_poll();
+  gen_poll();
   led((millis() / 100u) & 1u);
   return tud_mounted();
+}
+
+// --- Standalone capture (keypad) ----------------------------------------------
+
+// Abort with B / KEY2 (keypad INT line), or when the host starts talking.
+// The keypad line must first be seen released: the B press that started the
+// capture may still be held.
+static bool s_cancel_armed;
+
+static bool standalone_poll(void) {
+  tud_task();
+  gen_poll();
+  led((millis() / 100u) & 1u);
+  if (tud_cdc_available()) return true;
+  bool cancel = input_cancel_requested();
+  if (!cancel) s_cancel_armed = true;
+  return s_cancel_armed && cancel;
+}
+
+static void standalone_capture(const capture_cfg_t *cfg) {
+  capture_timing_t t = capture_timing(cfg->divider);
+  g_la.streaming = false;
+  g_la.rate_hz = t.rate_hz;
+  g_la.rate_exact = t.exact;
+  g_la.samples = cfg->total;
+  g_la.pre = cfg->pre;
+  g_la.num_stages = cfg->num_stages;
+  g_la.mask0 = cfg->mask[0];
+  g_la.value0 = cfg->value[0];
+  g_la.rle_requested = false;
+  g_la.state = cfg->num_stages ? LA_WAIT_TRIGGER : LA_CAPTURING;
+  ui_redraw_status();
+
+  uint32_t start;
+  s_cancel_armed = false;
+  capture_result_t r = capture_run(cfg, standalone_poll, &start);
+  if (r == CAPTURE_ABORTED) {
+    g_la.state = LA_ABORTED;
+  } else {
+    g_la.overrun = r == CAPTURE_OVERRUN;
+    g_la.captures++;
+    g_la.state = LA_DONE;
+  }
+  input_discard();  // the key that aborted must not start the next capture
+  ui_redraw_status();
 }
 
 static const stream_io_t stream_io = {
@@ -147,7 +193,7 @@ static void gpio_init(void) {
 int main(void) {
   clock_init();
   gpio_init();
-  keys_init();
+  input_init();  // KEY1/KEY2 and the CH455 keypad / display
 
   sdram_init();
   g_selftest.sdram_ok = sdram_test();
@@ -156,7 +202,7 @@ int main(void) {
 
   lcd_init();
   ui_init();
-  testsig_init();
+  gen_init();
   sump_init(&sump_io);
   stream_init(&stream_io);
   usb_init();
@@ -171,10 +217,12 @@ int main(void) {
     }
     if (sump_armed()) sump_run();
     if (stream_pending()) stream_run();
+    capture_cfg_t cfg;
+    if (ui_take_capture(&cfg)) standalone_capture(&cfg);
 
     ui_levels((uint8_t)LA_PORT->IDR);
     ui_poll();
-    testsig_poll();
+    gen_poll();
     led((millis() % 1000u) < 50u);  // heartbeat
     gpio_write(LED2_PORT, LED2_PIN, tud_mounted());
   }

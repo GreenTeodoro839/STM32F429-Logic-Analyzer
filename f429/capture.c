@@ -40,6 +40,13 @@ static volatile uint32_t s_tc_cycles;  // DWT time of the last chunk completion
 static bool s_timed;                   // capture_written() from DWT time instead of NDTR
 static int32_t s_lost;                // requests lost in the last run (-1 = not measured)
 static capture_window_t s_last;
+static capture_chunk_fn volatile s_meter_cb;  // live meter active
+static volatile uint32_t s_meter_done;         // chunks handed to the meter
+
+#define METER_IRQn       SPI4_IRQn  // unused peripheral vector, used as a software interrupt
+#define METER_IRQHandler SPI4_IRQHandler
+
+static void hw_stop(void);
 
 void capture_init(bool sdram_ok) { s_sdram_ok = sdram_ok; }
 bool capture_sdram_ok(void) { return s_sdram_ok; }
@@ -157,11 +164,62 @@ void DMA2_Stream1_IRQHandler(void) {
     uint32_t next = (uint32_t)s_ring.base + chunk_offset((done + 1u) & (s_ring.nchunks - 1u));
     if (done & 1u) DMA2_Stream1->M0AR = next;
     else DMA2_Stream1->M1AR = next;
+    if (s_meter_cb) NVIC_SetPendingIRQ(METER_IRQn);
   }
   if (isr & DMA_S1_ERRORS) s_dma_errors |= isr & DMA_S1_ERRORS;
 }
 
+// ---------------------------------------------------------------------------
+// Live meter mode: free-running sampling into the SRAM3 ring; every completed
+// chunk is handed to a callback from a low-priority interrupt (an otherwise
+// unused vector), so the processing can take most of a chunk time without
+// holding up USB or the main loop.
+// ---------------------------------------------------------------------------
+
+static void meter_off(void) {
+  s_meter_cb = 0;
+  NVIC_DisableIRQ(METER_IRQn);
+  NVIC_ClearPendingIRQ(METER_IRQn);
+}
+
+void METER_IRQHandler(void) {
+  capture_chunk_fn cb = s_meter_cb;
+  while (cb && s_meter_done < s_chunks) {
+    if (s_chunks - s_meter_done >= s_ring.nchunks) {  // fell behind: chunks overwritten
+      s_meter_done = s_chunks;
+      cb(0, 0);
+      break;
+    }
+    uint32_t c = s_meter_done & (s_ring.nchunks - 1u);
+    cb(s_ring.base + chunk_offset(c), CAPTURE_CHUNK);
+    s_meter_done++;
+    if (s_chunks - s_meter_done >= s_ring.nchunks) cb(0, 0);  // overwritten while processing
+  }
+}
+
+static void hw_start(capture_mem_t mem, const capture_timing_t *t);
+
+void capture_meter_start(uint32_t ticks, capture_chunk_fn cb) {
+  capture_timing_t t = timing_from_ticks(ticks, true);
+  meter_off();
+  if (s_last.mem == CAPTURE_MEM_SRAM) s_last.valid = false;  // SDRAM failed: the ring is shared
+  s_meter_done = 0;
+  NVIC_SetPriority(METER_IRQn, 7);  // lowest
+  NVIC_EnableIRQ(METER_IRQn);
+  hw_start(CAPTURE_MEM_SRAM, &t);
+  s_meter_cb = cb;
+}
+
+void capture_meter_stop(void) {
+  if (!s_meter_cb) return;
+  meter_off();
+  hw_stop();
+}
+
+bool capture_meter_running(void) { return s_meter_cb != 0; }
+
 static void hw_start(capture_mem_t mem, const capture_timing_t *t) {
+  meter_off();  // any other use of the sampler ends the meter
   select_ring(mem);
   RCC->APB2ENR |= RCC_APB2ENR_TIM8EN;
   RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
@@ -409,8 +467,9 @@ capture_result_t capture_run(const capture_cfg_t *cfg, capture_poll_fn poll, uin
   uint32_t pre = cfg->pre > total ? total : cfg->pre;
   uint32_t last_ms = millis();
 
-  // Short captures stay on chip; long ones go to the SDRAM.
-  bool sram = total <= CAPTURE_SRAM_RING - CAPTURE_SRAM_MARGIN;
+  // Snapshots go to the SDRAM (measured lossless at 20 MHz); the on-chip ring
+  // is left to the live meter and is only a fallback without SDRAM.
+  bool sram = !s_sdram_ok;
   uint32_t margin = sram ? CAPTURE_SRAM_MARGIN : CAPTURE_SDRAM_MARGIN;
 
   *start = 0;

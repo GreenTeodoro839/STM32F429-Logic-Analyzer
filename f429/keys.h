@@ -8,3 +8,4 @@
 
 void keys_init(void);
 uint8_t keys_poll(void);  // bit mask of keys pressed since the last call
+void keys_sync(void);     // forget presses that happened while not polled

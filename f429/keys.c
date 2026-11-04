@@ -36,3 +36,8 @@ uint8_t keys_poll(void) {
   s_stable = r;
   return pressed;
 }
+
+void keys_sync(void) {
+  s_stable = s_last_raw = raw();
+  s_change_ms = millis();
+}
