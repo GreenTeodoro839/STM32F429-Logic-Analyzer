@@ -1,0 +1,9 @@
+[submodule "third_party/cmsis_device_f1"]
+	path = third_party/cmsis_device_f1
+	url = https://github.com/STMicroelectronics/cmsis_device_f1
+[submodule "third_party/CMSIS_6"]
+	path = third_party/CMSIS_6
+	url = https://github.com/ARM-software/CMSIS_6
+[submodule "third_party/tinyusb"]
+	path = third_party/tinyusb
+	url = https://github.com/hathach/tinyusb

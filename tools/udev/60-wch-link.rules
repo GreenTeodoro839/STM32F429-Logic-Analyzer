@@ -1,0 +1,2 @@
+# WCH-Link in CMSIS-DAP (ARM) mode (1a86:8012) and RISC-V mode (1a86:8010): access for logged-in users
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="8010|8012", MODE="0660", GROUP="plugdev", TAG+="uaccess"
