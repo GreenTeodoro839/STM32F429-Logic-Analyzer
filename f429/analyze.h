@@ -45,6 +45,9 @@ typedef struct {
 void ana_stats_reset(ana_stats_t *s, uint8_t first_sample);
 // Feed the next n samples (contiguous in memory) in time order.
 void ana_stats_feed(ana_stats_t *s, const uint8_t *p, uint32_t n);
+// The same for the channels in `mask` only (the others read as low; reset
+// the statistics with first_sample & mask).
+void ana_stats_feed_masked(ana_stats_t *s, const uint8_t *p, uint32_t n, uint8_t mask);
 void ana_stats_finish(ana_stats_t *s);  // account for the time after the last edges
 
 // Results for channel ch at sample rate `rate_hz`.

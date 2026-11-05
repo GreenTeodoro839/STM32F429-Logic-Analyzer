@@ -15,10 +15,11 @@ $(OUT)/test_analyze: test_analyze.c ring_stub.c ../f429/analyze.c ../f429/decode
 $(OUT)/test_gen: test_gen.c ../f429/gen_calc.c | $(OUT)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $^
 
-# meter.c is compiled from a copy next to a stub clock.h (controllable cycles())
+# meter.c is compiled from a copy next to a stub clock.h; the test simulates
+# the CPU time of the statistics by wrapping ana_stats_feed_masked
 $(OUT)/test_meter: test_meter.c ../f429/meter.c ../f429/analyze.c ring_stub.c | $(OUT)
 	mkdir -p $(OUT)/meter_src && cp ../f429/meter.c meter_stub/clock.h $(OUT)/meter_src/
-	$(CC) $(CFLAGS) $(CPPFLAGS) -DMETER_TEST -o $@ test_meter.c $(OUT)/meter_src/meter.c ../f429/analyze.c ring_stub.c
+	$(CC) $(CFLAGS) $(CPPFLAGS) -DMETER_TEST -Wl,--wrap=ana_stats_feed_masked -o $@ test_meter.c $(OUT)/meter_src/meter.c ../f429/analyze.c ring_stub.c
 
 # UI simulator: the real UI code on synthetic data, screens as PPM files.
 # The sources are copied next to stub clock.h / tusb.h so that their own

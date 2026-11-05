@@ -34,12 +34,15 @@ void capture_or_and(uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_ou
 
 // Live meter: free-running sampling at `ticks` per sample into the SRAM ring.
 // cb(p, n) receives every completed chunk from a low-priority interrupt, or
-// (0, 0) if chunks were lost because processing fell behind. Any snapshot or
-// stream stops the meter.
+// (0, n) if n chunks were lost because processing fell behind. Any snapshot
+// or stream stops the meter.
 typedef void (*capture_chunk_fn)(const uint8_t *p, uint32_t n);
 void capture_meter_start(uint32_t ticks, capture_chunk_fn cb);
 void capture_meter_stop(void);
 bool capture_meter_running(void);
+// From inside cb: false once the DMA has started to overwrite the chunk
+// being processed (the ring holds only two chunks).
+bool capture_meter_intact(void);
 
 // Raw sampling for the DMA self-test: free-running into the given ring.
 void capture_hw_start(capture_mem_t mem, const capture_timing_t *t);

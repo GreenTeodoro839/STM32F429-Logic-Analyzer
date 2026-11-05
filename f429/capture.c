@@ -185,17 +185,21 @@ static void meter_off(void) {
 void METER_IRQHandler(void) {
   capture_chunk_fn cb = s_meter_cb;
   while (cb && s_meter_done < s_chunks) {
-    if (s_chunks - s_meter_done >= s_ring.nchunks) {  // fell behind: chunks overwritten
-      s_meter_done = s_chunks;
-      cb(0, 0);
+    // Chunk k is overwritten as soon as the DMA writes chunk k + nchunks,
+    // i.e. once s_chunks (the chunk being written) reaches it.
+    uint32_t behind = s_chunks - s_meter_done;
+    if (behind >= s_ring.nchunks) {
+      s_meter_done += behind;
+      cb(0, behind);
       break;
     }
     uint32_t c = s_meter_done & (s_ring.nchunks - 1u);
     cb(s_ring.base + chunk_offset(c), CAPTURE_CHUNK);
     s_meter_done++;
-    if (s_chunks - s_meter_done >= s_ring.nchunks) cb(0, 0);  // overwritten while processing
   }
 }
+
+bool capture_meter_intact(void) { return s_chunks - s_meter_done < s_ring.nchunks; }
 
 static void hw_start(capture_mem_t mem, const capture_timing_t *t);
 
@@ -204,10 +208,10 @@ void capture_meter_start(uint32_t ticks, capture_chunk_fn cb) {
   meter_off();
   if (s_last.mem == CAPTURE_MEM_SRAM) s_last.valid = false;  // SDRAM failed: the ring is shared
   s_meter_done = 0;
+  hw_start(CAPTURE_MEM_SRAM, &t);  // (calls meter_off, so the vector is enabled after it)
   NVIC_SetPriority(METER_IRQn, 7);  // lowest
-  NVIC_EnableIRQ(METER_IRQn);
-  hw_start(CAPTURE_MEM_SRAM, &t);
   s_meter_cb = cb;
+  NVIC_EnableIRQ(METER_IRQn);
 }
 
 void capture_meter_stop(void) {

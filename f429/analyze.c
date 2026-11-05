@@ -101,7 +101,8 @@ void ana_stats_reset(ana_stats_t *s, uint8_t first_sample) {
   for (unsigned ch = 0; ch < 8; ch++) s->ch[ch].min_high = s->ch[ch].min_low = ANA_NONE;
 }
 
-static void edges(ana_stats_t *s, uint64_t pos, uint8_t old, uint8_t now) {
+// Kept out of line: the sample scan around it then has its registers to itself.
+__attribute__((noinline)) static void edges(ana_stats_t *s, uint64_t pos, uint8_t old, uint8_t now) {
   uint8_t d = old ^ now;
   while (d) {
     unsigned ch = (unsigned)__builtin_ctz(d);
@@ -132,30 +133,38 @@ static void edges(ana_stats_t *s, uint64_t pos, uint8_t old, uint8_t now) {
   }
 }
 
-void ana_stats_feed(ana_stats_t *s, const uint8_t *p, uint32_t n) {
+void ana_stats_feed_masked(ana_stats_t *s, const uint8_t *p, uint32_t n, uint8_t mask) {
   const uint64_t base = s->n;
+  const uint32_t mask4 = mask * 0x01010101u;
   uint8_t prev = s->prev;
-  uint32_t prev4 = prev * 0x01010101u;
   uint32_t i = 0;
-  while (i < n) {
-    uint8_t v = p[i];
-    if (v == prev) {  // unchanged: skip whole words once aligned
-      i++;
-      if (!((uintptr_t)(p + i) & 3u)) {
-        while (i + 8u <= n && *(const u32_alias *)(p + i) == prev4 && *(const u32_alias *)(p + i + 4u) == prev4)
-          i += 8u;
-        while (i + 4u <= n && *(const u32_alias *)(p + i) == prev4) i += 4u;
+  for (;;) {
+    // Find the next sample that differs in the masked channels: bytewise up
+    // to a word boundary, then 32 samples per step.
+    const uint32_t prev4 = prev * 0x01010101u;
+    while (i < n && (p[i] & mask) == prev) {
+      if (!((uintptr_t)(p + ++i) & 3u)) {
+        while (i + 32u <= n) {
+          const u32_alias *w = (const u32_alias *)(p + i);
+          uint32_t x = (w[0] ^ prev4) | (w[1] ^ prev4) | (w[2] ^ prev4) | (w[3] ^ prev4);
+          x |= (w[4] ^ prev4) | (w[5] ^ prev4) | (w[6] ^ prev4) | (w[7] ^ prev4);
+          if (x & mask4) break;
+          i += 32u;
+        }
+        while (i + 4u <= n && !((*(const u32_alias *)(p + i) ^ prev4) & mask4)) i += 4u;
       }
-      continue;
     }
+    if (i >= n) break;
+    uint8_t v = p[i] & mask;
     edges(s, base + i, prev, v);
     prev = v;
-    prev4 = v * 0x01010101u;
     i++;
   }
   s->n = base + n;
   s->prev = prev;
 }
+
+void ana_stats_feed(ana_stats_t *s, const uint8_t *p, uint32_t n) { ana_stats_feed_masked(s, p, n, 0xFFu); }
 
 void ana_stats_finish(ana_stats_t *s) {
   for (unsigned ch = 0; ch < 8; ch++)

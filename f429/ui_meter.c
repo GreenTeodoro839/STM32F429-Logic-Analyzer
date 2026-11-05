@@ -19,7 +19,8 @@ static bool s_have;
 static uint32_t s_seq;
 static ana_job_t s_job;
 
-static void row_text(char *out, size_t n, const ana_stats_t *st, uint32_t rate, unsigned ch) {
+// mark '~': measured over a sample of the gate only (busy signal)
+static void row_text(char *out, size_t n, const ana_stats_t *st, uint32_t rate, unsigned ch, char mark) {
   char f[16], dty[16], p[16];
   const ana_chan_t *c = &st->ch[ch];
   uint64_t mhz = ana_freq_mhz(st, ch, rate);
@@ -31,7 +32,7 @@ static void row_text(char *out, size_t n, const ana_stats_t *st, uint32_t rate, 
   uint32_t mp = ana_min_pulse(st, ch);
   if (mp == ANA_NONE) strcpy(p, "-");
   else ui_fmt_time(p, sizeof p, mp, rate);
-  snprintf(out, n, "%u %-11s %6s %s", ch, f, dty, p);
+  snprintf(out, n, "%u%c%-11s %6s %s", ch, mark, f, dty, p);
 }
 
 static void draw_table(void) {
@@ -39,6 +40,7 @@ static void draw_table(void) {
   gfx_fill(0, TABLE_Y, GFX_W, LA_NUM_CH * LINE_H + 2, C_BG);
   const ana_stats_t *st = 0;
   uint32_t rate = 0;
+  uint8_t sampled = 0;
   if (s_capture_mode) {
     if (s_job.done) {
       st = &s_job.st;
@@ -47,10 +49,11 @@ static void draw_table(void) {
   } else if (s_have) {
     st = &s_res.st;
     rate = s_res.rate_hz;
+    sampled = s_res.sampled;
   }
   for (unsigned ch = 0; ch < LA_NUM_CH; ch++) {
     int y = TABLE_Y + (int)ch * LINE_H;
-    if (st) row_text(line, sizeof line, st, rate, ch);
+    if (st) row_text(line, sizeof line, st, rate, ch, ((sampled >> ch) & 1u) ? '~' : ' ');
     else snprintf(line, sizeof line, "%u  ...", ch);
     ui_row(y, line, ui_ch_color[ch], ch == s_sel);
   }
@@ -68,6 +71,8 @@ static void draw_head(void) {
     }
   } else if (ui_capture_busy()) {
     snprintf(line, sizeof line, "Live: paused (capturing)");
+  } else if (s_have && s_res.sampled && s_res.coverage >= 990u) {
+    snprintf(line, sizeof line, "Live 10MHz, ~ %u%% sampled", (s_res.sampled_coverage + 5u) / 10u);
   } else if (s_have && s_res.coverage < 990u) {
     snprintf(line, sizeof line, "Live 10MHz, %u%% of 0.5s", (s_res.coverage + 5u) / 10u);
   } else {

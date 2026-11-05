@@ -13,7 +13,10 @@ typedef struct {
   ana_stats_t st;     // frequencies, duty and pulses over the measured time
   uint32_t rate_hz;
   uint32_t gates;     // gates published since start
-  unsigned coverage;  // share of the gate actually measured, 0.1 % (busy signals are sampled)
+  unsigned coverage;  // share of the gate measured for the other channels, 0.1 %
+  uint8_t sampled;    // busy channels, measured over a sample of the gate only
+  unsigned sampled_coverage;  // their share of the gate, 0.1 %
+  unsigned load;      // CPU time spent measuring, 0.1 %
 } meter_result_t;
 
 void meter_start(void);
