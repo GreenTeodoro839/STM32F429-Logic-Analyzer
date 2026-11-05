@@ -222,9 +222,10 @@ static void redraw_view(void) {
 
 static void zoom(bool in) {
   uint32_t c = s_view.count;
-  // keep the active cursor (or the middle) at the same place
-  uint32_t anchor = s_cur[s_active] != ANA_NONE && col_of(s_cur[s_active]) >= 0 ? s_cur[s_active]
-                                                                                  : s_view.from + c / 2u;
+  // keep the active cursor, else the trigger, else the middle at its place
+  uint32_t anchor = s_view.from + c / 2u;
+  if (s_cur[s_active] != ANA_NONE && col_of(s_cur[s_active]) >= 0) anchor = s_cur[s_active];
+  else if (s_view.win.trigger >= 0 && col_of((uint32_t)s_view.win.trigger) >= 0) anchor = (uint32_t)s_view.win.trigger;
   uint32_t nc = in ? c / 2u : (c > 0x7FFFFFFFu ? c : c * 2u);
   if (nc < 1) nc = 1;
   uint64_t off = (uint64_t)(anchor - s_view.from) * nc / (c ? c : 1u);
@@ -255,7 +256,9 @@ static uint32_t cursor_or_center(void) {
 }
 
 static bool wave_key(uint8_t k) {
-  if (!s_view.win.valid || !s_view.ready) return false;
+  // Keys also act while a view is being prepared (held keys repeat faster
+  // than a large view is computed); it is redrawn once ready.
+  if (!s_view.win.valid || (!s_view.ready && !s_view.active)) return false;
   const capture_window_t *w = &s_view.win;
   switch (k) {
     case '2': zoom(true); break;
@@ -318,7 +321,7 @@ static bool wave_key(uint8_t k) {
     default:
       return false;
   }
-  redraw_view();
+  if (s_view.ready) redraw_view();
   return true;
 }
 

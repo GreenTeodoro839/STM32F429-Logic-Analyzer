@@ -134,13 +134,15 @@ static void test_stats(void) {
 // UART
 // ---------------------------------------------------------------------------
 
+static double s_uart_lead_bits;  // idle before the first frame (0: 37 samples, the start bit within 9 bits)
+
 static uint32_t uart_signal(capture_window_t *w, unsigned ch, uint32_t rate, uint32_t baud, const char *text, bool invert,
                             int bad_stop_at) {
   uint8_t m = (uint8_t)(1u << ch);
   uint32_t i = 0;
   // idle, then frames with small random gaps; bit boundaries on an exact time base
   double spb = (double)rate / baud;
-  double t = 37.0;
+  double t = s_uart_lead_bits ? s_uart_lead_bits * spb : 37.0;
   for (; i < (uint32_t)t; i++) ring_put(w, i, invert ? 0 : m);
   for (int k = 0; text[k]; k++) {
     uint16_t frame = (uint16_t)(((uint8_t)text[k]) << 1 | 0x200);  // start 0, data, stop 1
@@ -194,9 +196,12 @@ static void test_uart(void) {
   check_uart(20000000, 9600, false, true);
   check_uart(20000000, 115200, true, true);
 
-  // framing error on the third byte
+  // framing error on the third byte, after a certain sync (an idle line
+  // before the first frame): the next frame is decoded
   capture_window_t w = make_window(200000, 1000000);
+  s_uart_lead_bits = 12;
   uart_signal(&w, 3, 1000000, 115200, "ABCDEF", false, 2);
+  s_uart_lead_bits = 0;
   dec_cfg_t c;
   dec_default_cfg(&c);
   c.uart_baud = 115200;
@@ -205,6 +210,58 @@ static void test_uart(void) {
   }
   CHECK(g_dec.count >= 3 && (g_dec.items[2].flags & DEC_F_ERROR), "framing error not flagged");
   CHECK(g_dec.count >= 4 && g_dec.items[3].data == 'D', "decoder did not recover after a framing error");
+
+  // decoding from the middle of a burst of back-to-back frames (as when the
+  // waveform view starts inside a line): the rest of that line is skipped
+  // instead of being misframed, the next line is decoded exactly
+  const char *line = "LA-F429 test 00042\r\n";
+  const uint32_t rate = 2000000, baud = 115200;
+  w = make_window(40000, rate);
+  double spb = (double)rate / baud, t = 100.0;
+  uint32_t i = 0, line2 = 0;
+  for (int rep = 0; rep < 2; rep++) {
+    for (; i < (uint32_t)t; i++) ring_put(&w, i, 0x08);
+    if (rep) line2 = i;
+    for (const char *p = line; *p; p++) {
+      uint16_t frame = (uint16_t)(((uint8_t)*p) << 1 | 0x200);
+      for (int b = 0; b < 10; b++, t += spb)
+        for (; i < (uint32_t)(t + spb); i++) ring_put(&w, i, ((frame >> b) & 1u) ? 0x08 : 0);
+    }
+    t += 4000.0;  // 2 ms idle
+  }
+  for (; i < w.total; i++) ring_put(&w, i, 0x08);
+  for (uint32_t from = 300; from < 2000; from += 97) {  // starts at all kinds of places in line 1
+    c.uart_baud = 0;
+    dec_start(&c, &w, from);
+    while (!dec_run(50)) {
+    }
+    size_t len = strlen(line);
+    bool ok = g_dec.count == len && g_dec.baud == baud;
+    for (uint32_t k = 0; ok && k < len; k++)
+      ok = g_dec.items[k].data == (uint8_t)line[k] && !(g_dec.items[k].flags & DEC_F_ERROR) &&
+           (k || g_dec.items[0].at >= line2 - 1u);
+    CHECK(ok, "mid-burst start at %u: %u items, first %02x at %u (line 2 at %u)", from, g_dec.count,
+          g_dec.count ? g_dec.items[0].data : 0, g_dec.count ? g_dec.items[0].at : 0, line2);
+  }
+
+  // a continuous stream without gaps is decoded after the sync attempts
+  w = make_window(60000, rate);
+  t = 50.0;
+  i = 0;
+  for (; i < (uint32_t)t; i++) ring_put(&w, i, 0x08);
+  while (t + 10 * spb < w.total) {
+    uint16_t frame = (uint16_t)(0x55 << 1 | 0x200);
+    for (int b = 0; b < 10; b++, t += spb)
+      for (; i < (uint32_t)(t + spb); i++) ring_put(&w, i, ((frame >> b) & 1u) ? 0x08 : 0);
+  }
+  for (; i < w.total; i++) ring_put(&w, i, 0x08);
+  c.uart_baud = 115200;
+  dec_start(&c, &w, 1000);
+  while (!dec_run(50)) {
+  }
+  uint32_t good = 0;
+  for (uint32_t k = 0; k < g_dec.count; k++) good += g_dec.items[k].data == 0x55 && !g_dec.items[k].flags;
+  CHECK(g_dec.count > 200 && good == g_dec.count, "continuous 0x55: %u items, %u good", g_dec.count, good);
 }
 
 // ---------------------------------------------------------------------------

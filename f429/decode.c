@@ -104,6 +104,29 @@ static bool uart_step(void) {
   }
   uint32_t s = ana_next_change(w, d->pos, w->total, mask, idle);  // start bit
   if (s >= w->total || uart_at(s, 9) >= w->total) return false;
+  if (d->sync != DEC_SYNC_OK) {
+    // Decoding may begin in the middle of a burst, where a falling edge in
+    // the data would be taken for a start bit, and the misframing can last
+    // the whole burst. A start bit after 9 bits of idle line is certain:
+    // inside a frame, a run of idle level that ends in a falling edge began
+    // after the start bit and is at most 7 bits long. Until one is seen,
+    // falling edges are skipped; a stream without such gaps is taken as it
+    // comes after 64 of them, and so is a line idle since the start of the
+    // capture (both synced again after a framing error).
+    uint32_t need = (uint32_t)(((uint64_t)9u * g_dec.bit_fp) >> 8);
+    if (s >= need && ana_prev_change(w, s - need, s - 1u, mask, idle) == ANA_NONE) {
+      d->sync = DEC_SYNC_OK;
+    } else if (s < need && (!s || ana_prev_change(w, 0, s - 1u, mask, idle) == ANA_NONE)) {
+      d->sync = DEC_SYNC_GUESS;
+    } else if (d->sync == DEC_SYNC_NONE) {
+      if (d->sync_tries < 64u) {
+        d->sync_tries++;
+        d->pos = s + 1u;
+        return true;
+      }
+      d->sync = DEC_SYNC_GUESS;
+    }
+  }
   if ((ana_sample(w, uart_at(s, 0)) & mask) == idle) {  // glitch, not a start bit
     d->pos = s + 1u;
     return true;
@@ -113,6 +136,10 @@ static bool uart_step(void) {
     if (((ana_sample(w, uart_at(s, k + 1u)) & mask) == idle) != 0) byte |= (uint8_t)(1u << k);  // idle level = 1
   bool stop_ok = (ana_sample(w, uart_at(s, 9)) & mask) == idle;
   add(s, DEC_K_BYTE, byte, 0, stop_ok ? 0 : DEC_F_ERROR);
+  if (!stop_ok && d->sync == DEC_SYNC_GUESS) {  // probably misframed: sync again
+    d->sync = DEC_SYNC_NONE;
+    d->sync_tries = 0;
+  }
   d->pos = uart_at(s, 9);
   return true;
 }
@@ -217,6 +244,8 @@ void dec_start(const dec_cfg_t *cfg, const capture_window_t *w, uint32_t from) {
   d->word = d->word2 = 0;
   d->in_frame = false;
   d->addr_next = false;
+  d->sync = DEC_SYNC_NONE;
+  d->sync_tries = 0;
   d->active = false;
   d->done = true;
   if (!w->valid || w->total < 2 || !w->rate_hz) {

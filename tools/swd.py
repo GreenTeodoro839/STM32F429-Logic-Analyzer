@@ -42,7 +42,7 @@ class OpenOCD:
         count = (n + step - 1) // step
         i = 0
         while i < count:  # in pieces, OpenOCD replies get slow when huge
-            k = min(1024, count - i)
+            k = min(512, count - i)
             out = self.cmd(f"read_memory {addr + i * step:#x} {width} {k}")
             words += [int(x, 16) for x in out.split()]
             i += k

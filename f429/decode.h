@@ -55,11 +55,15 @@ typedef struct {
   const char *error;  // set if decoding could not start
   // decoder state
   uint32_t pos;
-  uint32_t bit_fp;  // UART: samples per bit, 16.16 fixed point
+  uint32_t bit_fp;  // UART: samples per bit, 24.8 fixed point
   uint8_t prev, bits, word, word2;
   uint32_t word_at;
   bool in_frame, addr_next;
+  uint8_t sync;  // UART: DEC_SYNC_*
+  uint8_t sync_tries;
 } dec_t;
+
+enum { DEC_SYNC_NONE, DEC_SYNC_GUESS, DEC_SYNC_OK };
 
 extern dec_t g_dec;
 
