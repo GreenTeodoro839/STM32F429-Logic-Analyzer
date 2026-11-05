@@ -105,7 +105,8 @@ static bool stream_service(void) {
 
 // --- Standalone capture (keypad) ----------------------------------------------
 
-// Abort with B / KEY2 (keypad INT line), or when the host starts talking.
+// Abort with any keypad key (CH455 INT line) or KEY2, or when the host
+// starts talking.
 // The keypad line must first be seen released: the B press that started the
 // capture may still be held.
 static bool s_cancel_armed;

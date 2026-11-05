@@ -124,8 +124,33 @@ static void make_capture(void) {
   g_sim_win.lost = 0;
 }
 
+void ui_seg7_freq(char *out, uint64_t mhz);
+
+static int check_seg7_format(void) {
+  static const struct {
+    uint64_t mhz;
+    const char *want;
+  } t[] = {
+      {0, "   0"},           {499, "   0"},          {1000, "   1"},          {1234000, "1234"},
+      {9999499, "9999"},     {9999600, "10.00"},     {12345000, "12.35"},     {99994000, "99.99"},
+      {99996000, "100.0"},   {123450000, "123.5"},   {999949999, "999.9"},    {999950000, "1000."},
+      {1234000000, "1234."}, {9999499999ull, "9999."}, {9999500000ull, "----"}, {115200000, "115.2"},
+  };
+  int bad = 0;
+  for (unsigned i = 0; i < sizeof t / sizeof t[0]; i++) {
+    char out[9];
+    ui_seg7_freq(out, t[i].mhz);
+    if (strcmp(out, t[i].want)) {
+      printf("FAIL: seg7 %llu mHz -> [%s], want [%s]\n", (unsigned long long)t[i].mhz, out, t[i].want);
+      bad++;
+    }
+  }
+  return bad;
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) s_dir = argv[1];
+  if (check_seg7_format()) return 1;
   mkdir(s_dir, 0755);
   gen_init();
   ui_init();

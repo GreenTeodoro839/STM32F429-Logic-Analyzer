@@ -146,21 +146,31 @@ static uint8_t seg_of(char c) {
   return 0;
 }
 
+// The points of this board's display (CS32841A) are not where the digit
+// registers suggest (found on the board): the point after the second digit
+// is the DP bit of digit 0, the colon is the DP bit of digit 1, digits 2 and
+// 3 light their own point; there is no point after the first digit.
+static const int8_t s_point_reg[4] = {-1, 0, 2, 3};  // register for the point after digit n
+#define COLON_REG 1
+
 bool ch455_text(const char *s) {
-  uint8_t seg[4] = {0, 0, 0, 0};
+  uint8_t seg[4] = {0, 0, 0, 0}, dp = 0;
   unsigned d = 0;
-  for (; *s && d < 4; s++) {
-    if (*s == '.') {  // decimal point of the previous digit (or a blank one)
-      if (d == 0) seg[d++] = 0x80;
-      else seg[d - 1] |= 0x80;
-      continue;
+  for (; *s; s++) {
+    if (*s == '.') {  // point after the previous digit (or after a blank one)
+      if (d == 0) d = 1;
+      int r = s_point_reg[d - 1];
+      if (r >= 0) dp |= (uint8_t)(1u << r);
+    } else if (*s == ':') {
+      dp |= 1u << COLON_REG;
+    } else if (d < 4) {
+      seg[d++] = seg_of(*s);
+    } else {
+      break;
     }
-    seg[d++] = seg_of(*s);
   }
-  while (*s == '.') {  // a trailing point after the fourth digit
-    seg[3] |= 0x80;
-    s++;
-  }
+  for (unsigned k = 0; k < 4; k++)
+    if ((dp >> k) & 1u) seg[k] |= 0x80;
   return ch455_digits(seg);
 }
 

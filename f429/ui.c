@@ -102,24 +102,29 @@ void ui_fmt_stime(char *out, size_t n, int64_t samples, uint32_t rate_hz) {
   ui_fmt_time(out + 1, n - 1, (uint64_t)(samples < 0 ? -samples : samples), rate_hz);
 }
 
-void ui_seg7_khz(char *out, uint64_t mhz) {
-  // kHz with 4 significant digits: 0.001 .. 9999.
-  uint64_t hz1000 = mhz;  // millihertz = 1e-6 kHz units
-  if (hz1000 >= 10000000000ull) {
-    strcpy(out, "----");  // >= 10 MHz does not fit
+// Frequency for the 4-digit display, 4 significant digits: Hz without a
+// point up to 9999 Hz, kHz with a point above ("12.34", "123.4", "1234.").
+// (The display has no point after its first digit, so "1.234" kHz cannot be
+// shown.)
+void ui_seg7_freq(char *out, uint64_t mhz) {
+  uint64_t v = (mhz + 500u) / 1000u;  // Hz
+  if (v < 10000u) {
+    snprintf(out, 9, "%4lu", (unsigned long)v);
     return;
   }
-  // value in units of 1e-6 kHz; choose decimals so that 4 digits show
-  uint64_t div = 1000000;  // 1 kHz
-  unsigned dec = 0;
-  uint64_t ip = hz1000 / div;
-  if (ip < 10) dec = 3;
-  else if (ip < 100) dec = 2;
-  else if (ip < 1000) dec = 1;
-  uint64_t p = dec == 3 ? 1000 : dec == 2 ? 100 : dec == 1 ? 10 : 1;
-  uint64_t q = (hz1000 * p + div / 2) / div;
-  if (dec) snprintf(out, 9, "%lu.%0*lu", (unsigned long)(q / p), (int)dec, (unsigned long)(q % p));
-  else snprintf(out, 9, "%lu.", (unsigned long)q);
+  v = (mhz + 5000u) / 10000u;  // 10 Hz
+  if (v < 10000u) {
+    snprintf(out, 9, "%2lu.%02lu", (unsigned long)(v / 100u), (unsigned long)(v % 100u));
+    return;
+  }
+  v = (mhz + 50000u) / 100000u;  // 100 Hz
+  if (v < 10000u) {
+    snprintf(out, 9, "%3lu.%lu", (unsigned long)(v / 10u), (unsigned long)(v % 10u));
+    return;
+  }
+  v = (mhz + 500000u) / 1000000u;  // kHz
+  if (v < 10000u) snprintf(out, 9, "%4lu.", (unsigned long)v);
+  else strcpy(out, "----");  // 10 MHz and more
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +420,17 @@ static void flush(bool wait) {
   if (wait) lcd_wait();
 }
 
+// Debug hook: a debugger writes raw segment bytes (bit 7 = DP) to [0..3]
+// and sets [4]; they are shown instead of the page's text until [4] is 0.
+volatile uint8_t g_seg7_raw[5];
+
 static void seg7_update(void) {
+  if (g_seg7_raw[4]) {
+    uint8_t seg[4] = {g_seg7_raw[0], g_seg7_raw[1], g_seg7_raw[2], g_seg7_raw[3]};
+    ch455_digits(seg);
+    s_seg7[0] = 0;  // the page's text is written again afterwards
+    return;
+  }
   char buf[9] = "----";
   const ui_page_t *pg = s_pages[s_page];
   if (pg->seg7) pg->seg7(buf);

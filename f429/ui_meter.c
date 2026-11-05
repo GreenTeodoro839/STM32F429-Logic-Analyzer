@@ -1,7 +1,7 @@
 // Meter page: frequency, duty cycle and shortest pulse of every channel.
 // Live: background sampling at 10 MHz, updated every 0.5 s. Capture: over the
 // range shown on the waveform page. The selected channel's frequency is also
-// shown on the 4-digit display (in kHz).
+// shown on the 4-digit display (Hz, or kHz with a point).
 // Keys: 2/8 channel, # live / capture.
 #include <stdio.h>
 #include <string.h>
@@ -154,7 +154,7 @@ static void meter_seg7(char *out) {
     return;
   }
   uint64_t mhz = ana_freq_mhz(st, s_sel, rate);
-  if (mhz) ui_seg7_khz(out, mhz);
+  if (mhz) ui_seg7_freq(out, mhz);
   else strcpy(out, "----");
 }
 

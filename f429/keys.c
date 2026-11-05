@@ -18,8 +18,12 @@ static uint8_t raw(void) {
 void keys_init(void) {
   RCC->AHB1ENR |= RCC_AHB1ENR_GPIOGEN;
   (void)RCC->AHB1ENR;
-  gpio_mode(KEY1_PORT, KEY1_PIN, GPIO_IN);  // external 10k pull-ups
+  // These nets only go to the board-to-board connector J2 (buttons on a
+  // carrier board); without one they float, hence the pull-ups.
+  gpio_mode(KEY1_PORT, KEY1_PIN, GPIO_IN);
   gpio_mode(KEY2_PORT, KEY2_PIN, GPIO_IN);
+  gpio_pull(KEY1_PORT, KEY1_PIN, GPIO_PULLUP);
+  gpio_pull(KEY2_PORT, KEY2_PIN, GPIO_PULLUP);
   s_stable = s_last_raw = raw();
 }
 

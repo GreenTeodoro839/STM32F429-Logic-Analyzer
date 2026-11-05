@@ -1,4 +1,6 @@
-// KEY1 (PG6) / KEY2 (PG7), debounced press events.
+// KEY1 (PG6) / KEY2 (PG7), debounced press events. On this board the two nets
+// only reach the board-to-board connector J2: there are no such buttons
+// unless a carrier board provides them.
 #pragma once
 
 #include <stdint.h>

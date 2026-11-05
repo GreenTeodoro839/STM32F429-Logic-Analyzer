@@ -1,7 +1,8 @@
 // LCD user interface (240x240) driven by the 4x4 keypad (see input.h).
 // Pages: waveform (status, live levels, last capture with cursors), capture
 // setup (standalone capture), meter, decode, generator, pins, info; A opens
-// the menu, B runs a standalone capture, KEY1 steps through the pages.
+// the menu, B runs a standalone capture (KEY1 on a carrier board steps
+// through the pages).
 #pragma once
 
 #include <stdbool.h>

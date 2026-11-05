@@ -86,7 +86,7 @@ static void setup_draw(void) {
     snprintf(line, sizeof line, "  %s before the trigger", v);
     gfx_text(4, 158, &font_s, line, C_DIM, C_BG);
   }
-  gfx_text(4, 184, &font_s, "B or # run, B/KEY2 abort", C_TEXT, C_BG);
+  gfx_text(4, 184, &font_s, "B or # run, any key aborts", C_TEXT, C_BG);
   ui_hint("2/8 field  4/6 change");
 }
 

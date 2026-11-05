@@ -28,6 +28,10 @@ void lcd_wait(void) {}
 void lcd_flush_rows(const uint16_t *fb, unsigned y0, unsigned y1) { (void)fb, (void)y0, (void)y1; }
 
 char g_seg7[16];
+bool ch455_digits(const uint8_t seg[4]) {
+  snprintf(g_seg7, sizeof g_seg7, "raw %02x%02x%02x%02x", seg[0], seg[1], seg[2], seg[3]);
+  return true;
+}
 bool ch455_text(const char *s) {
   snprintf(g_seg7, sizeof g_seg7, "%s", s);
   return true;

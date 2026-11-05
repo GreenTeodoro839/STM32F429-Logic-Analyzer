@@ -1,4 +1,5 @@
-// Key events from the 4x4 keypad (via CH455) and the KEY1/KEY2 buttons.
+// Key events from the 4x4 keypad (via CH455), and from KEY1/KEY2 on J2 (if a
+// carrier board has them).
 //
 // Keypad legend (KEY1..KEY16 of the schematic, row by row):
 //     1 2 3 A

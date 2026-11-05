@@ -79,7 +79,7 @@ void ui_fmt_hz_milli(char *out, size_t n, uint64_t mhz, unsigned digits);  // fr
 void ui_fmt_time(char *out, size_t n, uint64_t samples, uint32_t rate_hz);  // 1.6ms
 void ui_fmt_stime(char *out, size_t n, int64_t samples, uint32_t rate_hz);  // +1.6ms / -20us
 // 4-digit display text for a frequency (kHz, decimal point placed), e.g. "1.000"
-void ui_seg7_khz(char *out, uint64_t mhz);
+void ui_seg7_freq(char *out, uint64_t mhz);
 
 // --- Status block of the waveform page (ui.c) ----------------------------------
 

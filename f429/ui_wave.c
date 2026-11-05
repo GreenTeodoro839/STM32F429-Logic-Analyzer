@@ -127,7 +127,7 @@ static void draw_footer(void) {
   char l1[48], l2[48], a[20], b[20];
   gfx_fill(0, FOOT_Y, GFX_W, GFX_H - FOOT_Y, C_BG);
   if (!s_view.ready) {
-    gfx_text(2, FOOT_Y + 16, &font_s, "B run  A menu  K1 page", C_DIM, C_BG);
+    gfx_text(2, FOOT_Y + 16, &font_s, "B run   A menu", C_DIM, C_BG);
     return;
   }
   uint32_t rate = s_view.win.rate_hz;
@@ -331,11 +331,11 @@ static void wave_poll(void) {
   if (was && s_view.ready) redraw_view();
 }
 
-// 4-digit display: 1 / (B - A) in kHz when both cursors are set
+// 4-digit display: 1 / (B - A) when both cursors are set (Hz, or kHz with a point)
 static void wave_seg7(char *out) {
   if (s_cur[0] != ANA_NONE && s_cur[1] != ANA_NONE && s_cur[0] != s_cur[1]) {
     uint32_t d = s_cur[1] > s_cur[0] ? s_cur[1] - s_cur[0] : s_cur[0] - s_cur[1];
-    ui_seg7_khz(out, (uint64_t)s_view.win.rate_hz * 1000u / d);
+    ui_seg7_freq(out, (uint64_t)s_view.win.rate_hz * 1000u / d);
   } else {
     strcpy(out, "----");
   }

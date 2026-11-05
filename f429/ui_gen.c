@@ -1,7 +1,7 @@
 // Generator page: the three square-wave outputs and the UART output on JD2.
 // Keys: 2/8 output, 4/6 field, C/D value down/up, 0 on/off,
 //       # type a value (digits, * deletes / cancels, # sets).
-// The selected output's frequency is shown on the 4-digit display (kHz).
+// The selected output's frequency is shown on the 4-digit display (Hz, or kHz with a point).
 #include <stdio.h>
 #include <string.h>
 
@@ -175,10 +175,10 @@ static bool gen_key(uint8_t k) {
 
 static void gen_seg7(char *out) {
   if (s_out < GEN_PWM_OUTPUTS) {
-    if (g_gen.pwm[s_out].on) ui_seg7_khz(out, gen_actual_mhz(s_out));
+    if (g_gen.pwm[s_out].on) ui_seg7_freq(out, gen_actual_mhz(s_out));
     else strcpy(out, " OFF");
   } else {
-    snprintf(out, 9, "%4lu", (unsigned long)(g_gen.uart.baud >= 10000 ? g_gen.uart.baud / 1000u : g_gen.uart.baud));
+    ui_seg7_freq(out, (uint64_t)g_gen.uart.baud * 1000u);  // baud like a frequency: 9600, 115.2
   }
 }
 
