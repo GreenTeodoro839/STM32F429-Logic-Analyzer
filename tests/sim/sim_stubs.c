@@ -52,11 +52,11 @@ capture_window_t g_sim_win;
 capture_window_t capture_last_window(void) { return g_sim_win; }
 uint32_t capture_max_samples(void) { return 32u * 1024 * 1024 - 65536; }
 bool capture_sdram_ok(void) { return true; }
-void capture_or_and(uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_out) {
+void capture_or_and(const capture_window_t *w, uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_out) {
   uint8_t o = 0, a = 0xFF;
   while (n) {
     uint32_t c;
-    const uint8_t *p = capture_span(index, &c);
+    const uint8_t *p = capture_window_span(w, index, &c);
     if (c > n) c = n;
     for (uint32_t i = 0; i < c; i++) o |= p[i], a &= p[i];
     index += c;

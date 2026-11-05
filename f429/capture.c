@@ -26,11 +26,21 @@ static uint8_t s_sdram_ring[CAPTURE_SDRAM_RING] __attribute__((section(".sdram")
 #define FIFO_SLACK 16u  // samples that may sit in the DMA FIFO (4 words)
 
 static bool s_sdram_ok;
-static struct {
+typedef struct {
   uint8_t *base;
   uint32_t size, mask, nchunks;
   capture_mem_t mem;
-} s_ring = {s_sram_ring, CAPTURE_SRAM_RING, CAPTURE_SRAM_RING - 1u, CAPTURE_SRAM_RING / CAPTURE_CHUNK, CAPTURE_MEM_SRAM};
+} ring_t;
+static const ring_t s_rings[2] = {
+    [CAPTURE_MEM_SRAM] = {s_sram_ring, CAPTURE_SRAM_RING, CAPTURE_SRAM_RING - 1u, CAPTURE_SRAM_RING / CAPTURE_CHUNK,
+                          CAPTURE_MEM_SRAM},
+    [CAPTURE_MEM_SDRAM] = {s_sdram_ring, CAPTURE_SDRAM_RING, CAPTURE_SDRAM_RING - 1u,
+                           CAPTURE_SDRAM_RING / CAPTURE_CHUNK, CAPTURE_MEM_SDRAM},
+};
+// The ring the sampler uses (or last used). A capture window may be in the
+// other one: the live meter samples into SRAM while the last capture stays
+// in SDRAM, so windows are read through their own ring (capture_window_span).
+static ring_t s_ring = s_rings[CAPTURE_MEM_SRAM];
 
 static volatile uint32_t s_chunks;  // completed DMA buffers since start
 static uint32_t s_start_cycles;
@@ -63,16 +73,24 @@ capture_window_t capture_last_window(void) { return s_last; }
 // works in a different bank. Measured: CPU reads in the bank the DMA writes to
 // are 1.7x slower (row conflicts), and long read bursts there can starve the
 // DMA.
-static inline uint32_t chunk_offset(uint32_t c) {
-  if (s_ring.mem != CAPTURE_MEM_SDRAM) return c * CAPTURE_CHUNK;
-  return ((c & 3u) * (s_ring.nchunks / 4u) + (c >> 2)) * CAPTURE_CHUNK;
+static inline uint32_t ring_chunk_offset(const ring_t *r, uint32_t c) {
+  if (r->mem != CAPTURE_MEM_SDRAM) return c * CAPTURE_CHUNK;
+  return ((c & 3u) * (r->nchunks / 4u) + (c >> 2)) * CAPTURE_CHUNK;
 }
+static inline uint32_t chunk_offset(uint32_t c) { return ring_chunk_offset(&s_ring, c); }
 
-const uint8_t *capture_span(uint64_t index, uint32_t *contiguous) {
-  uint32_t i = (uint32_t)index & s_ring.mask;
+static const uint8_t *ring_span(const ring_t *r, uint64_t index, uint32_t *contiguous) {
+  uint32_t i = (uint32_t)index & r->mask;
   uint32_t off = i % CAPTURE_CHUNK;
   *contiguous = CAPTURE_CHUNK - off;
-  return s_ring.base + chunk_offset(i / CAPTURE_CHUNK) + off;
+  return r->base + ring_chunk_offset(r, i / CAPTURE_CHUNK) + off;
+}
+
+const uint8_t *capture_span(uint64_t index, uint32_t *contiguous) { return ring_span(&s_ring, index, contiguous); }
+
+const uint8_t *capture_window_span(const capture_window_t *w, uint32_t i, uint32_t *contiguous) {
+  return ring_span(&s_rings[w->mem == CAPTURE_MEM_SDRAM ? CAPTURE_MEM_SDRAM : CAPTURE_MEM_SRAM],
+                   (uint64_t)w->start + i, contiguous);
 }
 
 uint8_t capture_sample(uint32_t index) {
@@ -87,11 +105,7 @@ const uint8_t *capture_hw_ring(capture_mem_t mem, uint32_t *size) {
 
 static void select_ring(capture_mem_t mem) {
   if (mem == CAPTURE_MEM_SDRAM && !s_sdram_ok) mem = CAPTURE_MEM_SRAM;
-  s_ring.mem = mem;
-  s_ring.base = mem == CAPTURE_MEM_SDRAM ? s_sdram_ring : s_sram_ring;
-  s_ring.size = mem == CAPTURE_MEM_SDRAM ? CAPTURE_SDRAM_RING : CAPTURE_SRAM_RING;
-  s_ring.mask = s_ring.size - 1u;
-  s_ring.nchunks = s_ring.size / CAPTURE_CHUNK;
+  s_ring = s_rings[mem];
 }
 
 // ---------------------------------------------------------------------------
@@ -551,11 +565,11 @@ capture_result_t capture_run(const capture_cfg_t *cfg, capture_poll_fn poll, uin
 // Preview support
 // ---------------------------------------------------------------------------
 
-void capture_or_and(uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_out) {
+void capture_or_and(const capture_window_t *w, uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_out) {
   uint32_t o = 0, a = 0xFFFFFFFFu;
   while (n) {
     uint32_t seg;
-    const uint8_t *p = capture_span(index, &seg);
+    const uint8_t *p = capture_window_span(w, index, &seg);
     if (seg > n) seg = n;
     uint32_t i = 0;
     for (; i < seg && ((uintptr_t)(p + i) & 3u); i++) {

@@ -7,10 +7,12 @@
 #include <string.h>
 
 #include "analyze.h"
+#include "clock.h"
 #include "meter.h"
 #include "ui_priv.h"
 
-#define TABLE_Y 50
+#define TABLE_Y    50
+#define JOB_CYCLES (120000000u / 1000u * 5u)  // statistics work per poll: 5 ms
 
 static bool s_capture_mode;
 static unsigned s_sel;
@@ -129,9 +131,14 @@ static bool meter_key(uint8_t k) {
 
 static void meter_poll(void) {
   if (s_capture_mode) {
-    if (s_job.active && ana_job_run(&s_job, 2000000u)) {
-      draw_head();
-      draw_table();
+    // in pieces, at most a few ms per poll: a busy signal costs ~200 cycles
+    // per edge, a whole view could hold up USB and the keys for a second
+    uint32_t t0 = cycles();
+    while (s_job.active && (uint32_t)(cycles() - t0) < JOB_CYCLES) {
+      if (ana_job_run(&s_job, 4096u)) {
+        draw_head();
+        draw_table();
+      }
     }
     return;
   }

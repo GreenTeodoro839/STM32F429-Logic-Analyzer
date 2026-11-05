@@ -10,6 +10,10 @@ const uint8_t *capture_span(uint64_t index, uint32_t *contiguous) {
 
 uint8_t capture_sample(uint32_t index) { return g_ring[index & (RING_SIZE - 1u)]; }
 
+const uint8_t *capture_window_span(const capture_window_t *w, uint32_t i, uint32_t *contiguous) {
+  return capture_span((uint64_t)w->start + i, contiguous);
+}
+
 capture_window_t ring_window(uint32_t start, uint32_t n, uint32_t rate_hz) {
   capture_window_t w;
   memset(&w, 0, sizeof w);

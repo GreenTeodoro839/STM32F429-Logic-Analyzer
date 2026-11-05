@@ -69,7 +69,7 @@ static void view_work(void) {
     // than columns a sample spans several columns.
     uint64_t a = (uint64_t)c * s_view.count / WAVE_W, b = (uint64_t)(c + 1u) * s_view.count / WAVE_W;
     if (b <= a) b = a + 1u;
-    capture_or_and(s_view.win.start + s_view.from + (uint32_t)a, (uint32_t)(b - a), &s_view.col_or[c],
+    capture_or_and(&s_view.win, s_view.from + (uint32_t)a, (uint32_t)(b - a), &s_view.col_or[c],
                    &s_view.col_and[c]);
     s_view.col++;
   }

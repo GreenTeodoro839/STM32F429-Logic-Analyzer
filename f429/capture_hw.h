@@ -29,8 +29,11 @@ typedef struct {
 } capture_window_t;
 capture_window_t capture_last_window(void);
 
-// OR and AND of the ring samples [index, index + n) (index wraps).
-void capture_or_and(uint32_t index, uint32_t n, uint8_t *or_out, uint8_t *and_out);
+// Window sample i and how many samples from there on are contiguous (>= 1),
+// read from the window's own ring (not necessarily the sampler's current one).
+const uint8_t *capture_window_span(const capture_window_t *w, uint32_t i, uint32_t *contiguous);
+// OR and AND of the window samples [i, i + n).
+void capture_or_and(const capture_window_t *w, uint32_t i, uint32_t n, uint8_t *or_out, uint8_t *and_out);
 
 // Live meter: free-running sampling at `ticks` per sample into the SRAM ring.
 // cb(p, n) receives every completed chunk from a low-priority interrupt, or

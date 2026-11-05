@@ -12,13 +12,16 @@ typedef uint32_t __attribute__((may_alias)) u32_alias;
 // up to the end of its block.
 static const uint8_t *span(const capture_window_t *w, uint32_t i, uint32_t *n) {
   uint32_t r = w->start + i, c;
-  const uint8_t *p = capture_span(r, &c);
+  const uint8_t *p = capture_window_span(w, i, &c);
   uint32_t b = BLK - (r % BLK);
   *n = c < b ? c : b;
   return p;
 }
 
-uint8_t ana_sample(const capture_window_t *w, uint32_t i) { return capture_sample(w->start + i); }
+uint8_t ana_sample(const capture_window_t *w, uint32_t i) {
+  uint32_t c;
+  return *capture_window_span(w, i, &c);
+}
 
 // First k in p[0..n) with (p[k] & mask) != ref, or -1.
 static int32_t mismatch_fwd(const uint8_t *p, uint32_t n, uint8_t mask, uint8_t ref) {
