@@ -11,10 +11,57 @@
 | 显示 / 操作 | 1.3" 240×240 彩色 IPS + 4×4 键盘 + 4 位数码管：波形浏览与光标、脱机采集、频率计、协议解码、信号发生器 | 0.96" OLED：状态、实时电平 |
 | 采样完整性 | 每次采集统计 DMA 丢失的样本数，有丢失就报警 | — |
 
+## 快速上手（LA-F429）
+
+**1. 编译**（Linux；需要 `arm-none-eabi-gcc`、`cmake` ≥ 3.20、`ninja`、`openocd`）
+
+```sh
+sudo apt install gcc-arm-none-eabi cmake ninja-build openocd     # Ubuntu / Debian
+git clone --recursive https://github.com/GreenTeodoro839/STM32F429-Logic-Analyzer.git
+cd STM32F429-Logic-Analyzer
+cmake -S . -B build/f429 -G Ninja && cmake --build build/f429
 ```
-cmake -S . -B build/f429 -G Ninja                  # 默认 F429
-cmake -S . -B build/f103 -G Ninja -DLA_BOARD=F103
+
+**2. 烧录**：板子的 **USB1**（板载 DAP-Link）接电脑，供电和烧录都走它。
+
+```sh
+cmake --build build/f429 --target flash
 ```
+
+（Windows 上可以用 Keil、pyOCD 等支持 CMSIS-DAP 的工具烧 `build/f429/la_f429.hex`。）
+
+**3. 接线**
+
+- 再把 **USB2** 接电脑：这是逻辑分析仪自己的 USB 口（虚拟串口，Linux 上是 `/dev/ttyACM*`，Windows 上是 `COMx`，免驱）。
+  USB1 的 DAP-Link 也会多出一个串口，**不是它**：分析仪的设备名是 `LA-F429 Logic Analyzer`（VID:PID 1209:0001）。
+  Linux 建议装 udev 规则，设备固定叫 `/dev/la-f429`：
+  `sudo cp tools/udev/*.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules`
+- 被测信号接 CH0–CH7（JD2-15/9/11/13、JD1-13/3/14/15，见下面引脚表），**GND 一定要共地**，只接 **3.3 V** 逻辑。
+- 想先看看效果：用杜邦线短接 JD2 上的四对排针（10↔9、12↔11、16↔15、7↔13），板子自带的测试信号
+  （100 kHz、1 MHz、1 kHz、UART）就进了 CH1、CH2、CH0、CH3。
+
+**4. 用 PulseView 采集**（Connect to Device → 选驱动 → Serial port 选 `/dev/la-f429` 或 `COMx` → Scan）
+
+| 想要 | 驱动 | 说明 |
+|---|---|---|
+| 设备端触发、触发点精确、深度最大 3350 万点 | **Openbench Logic Sniffer & SUMP compatibles** | 发行版自带的 PulseView 就能用；上传较慢（约 300 kB/s） |
+| 更快的上传 / 长时间连续采集 | **RaspberryPI PICO** | 需要 nightly 版 PulseView；触发在电脑端做 |
+
+采样率最高 20 MHz；触发在通道上设 1（上升沿）或 0（下降沿）。命令行示例：
+
+```sh
+sigrok-cli -d ols:conn=/dev/la-f429 --config samplerate=20M:captureratio=50 --samples 1000000 -t 0=1 -o cap.sr
+```
+
+**5. 脱机使用（不接电脑也行，USB1 供电即可）**：用板上的 4×4 键盘操作。
+
+- **B**：开始采集，波形显示在 LCD 上；等待触发或采集中按任意键中止。默认 2 MHz、100 万点、CH0 上升沿触发、
+  预触发 10 %，在“采集设置”页（A → 2）修改，CH0 上没有信号时把触发改成 `none`（立即开始）。
+- **A**：打开菜单，按数字选页面：1 波形、2 采集设置、3 频率计、4 解码、5 信号发生器、6 引脚、7 信息。
+- 波形页：2/8 缩放，4/6 平移，1/3 光标跳到上/下一个边沿，# 换光标，底栏显示 Δt 和频率。
+- 每页底栏都有按键提示；数码管显示当前页的频率：不带小数点是 Hz，带点是 kHz。
+
+各功能的详细说明见下文。F103 版的编译：`cmake -S . -B build/f103 -G Ninja -DLA_BOARD=F103`（见 [LA-F103](#la-f103)）。
 
 ---
 
@@ -232,4 +279,4 @@ cmake -S . -B build/f103 -G Ninja -DLA_BOARD=F103 && cmake --build build/f103 --
 | `f429/ch455.c`、`input.c` | CH455 键盘和数码管、按键事件 |
 | `tests/` | 主机单元测试与界面仿真器 |
 | `f103/` | F103 版（OLED 界面等） |
-| `tools/` | `stream_bench.py` 吞吐测试、`gen_font.py`、udev 规则 |
+| `tools/` | `stream_bench.py` 吞吐测试、`swd.py` 调试（截屏 / 注入按键）、`gen_font.py`、udev 规则 |
