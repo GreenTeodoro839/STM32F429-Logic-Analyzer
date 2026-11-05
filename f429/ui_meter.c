@@ -27,8 +27,13 @@ static void row_text(char *out, size_t n, const ana_stats_t *st, uint32_t rate, 
   if (mhz) ui_fmt_hz_milli(f, sizeof f, mhz, 5);
   else if (!c->rises && !c->falls) snprintf(f, sizeof f, "%s", ((st->first >> ch) & 1u) ? "high" : "low");
   else snprintf(f, sizeof f, "%lu edge%s", (unsigned long)(c->rises + c->falls), c->rises + c->falls > 1 ? "s" : "");
+  // The duty cycle is only as precise as one sample in a period (a signal
+  // locked to the sample clock does not average out): shown to 0.1 % from
+  // 1000 samples per period, to 1 % from 20, below that as approximate.
   unsigned d = ana_duty_permille(st, ch);
-  snprintf(dty, sizeof dty, "%u.%u%%", d / 10u, d % 10u);
+  uint64_t per = mhz ? (uint64_t)rate * 1000u / mhz : ~0ull;  // samples per period
+  if (per >= 1000u) snprintf(dty, sizeof dty, "%u.%u%%", d / 10u, d % 10u);
+  else snprintf(dty, sizeof dty, "%s%u%%", per < 20u ? "~" : "", (d + 5u) / 10u);
   uint32_t mp = ana_min_pulse(st, ch);
   if (mp == ANA_NONE) strcpy(p, "-");
   else ui_fmt_time(p, sizeof p, mp, rate);
